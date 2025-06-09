@@ -22,6 +22,11 @@ on:
       - 'scripts/**'
       - '.github/workflows/ci-release.yml'
 
+# Add permissions at workflow level
+permissions:
+  contents: write
+  packages: write
+
 jobs:
   update-versions:
     runs-on: ubuntu-latest
@@ -202,6 +207,7 @@ jobs:
     permissions:
       packages: write
       contents: write
+      id-token: write # Needed for some registry authentications
     env:
       IMAGE_NAME: zabbix-proxy-sqlite3
     strategy:
@@ -214,7 +220,7 @@ jobs:
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
-          username: ${{ github.actor }}
+          username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Build and push images
         uses: docker/build-push-action@v6
