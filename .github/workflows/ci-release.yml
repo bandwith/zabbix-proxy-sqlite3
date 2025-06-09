@@ -1,0 +1,329 @@
+# Primary workflow for Zabbix Proxy SQLite3
+# This workflow handles version detection, container building, and GitHub releases
+# It automatically rebuilds containers when dependencies change
+
+name: CI & Release Chain
+
+on:
+  schedule:
+    - cron: '0 0 * * *'  # Run daily at midnight UTC
+  workflow_dispatch:
+    inputs:
+      force_rebuild:
+        description: 'Force rebuild of all containers'
+        required: false
+        type: boolean
+        default: false
+  push:
+    branches:
+      - main
+    paths:
+      - 'Dockerfile'
+      - 'scripts/**'
+      - '.github/workflows/ci-release.yml'
+
+jobs:
+  update-versions:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      latest_version: ${{ steps.fetch_versions.outputs.latest_version }}
+      lts_version: ${{ steps.fetch_versions.outputs.lts_version }}
+      all_versions: ${{ steps.fetch_versions.outputs.all_versions }}
+      matrix: ${{ steps.generate_matrix.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Fetch and save official Zabbix versions
+        id: fetch_versions
+        run: |
+          curl -s "https://services.zabbix.com/updates/v1" > .github/zabbix-versions.json
+          if ! jq . .github/zabbix-versions.json > /dev/null; then
+            echo "Error: Invalid JSON received from Zabbix API"
+            exit 1
+          fi
+          SUPPORTED_VERSIONS=$(jq -r '.versions[] | select(.end_of_full_support == false) | .latest_release.release' .github/zabbix-versions.json | sort -V)
+          LTS_VERSION=""
+          for VERSION in $SUPPORTED_VERSIONS; do
+            [[ -z "$VERSION" ]] && continue
+            MINOR=$(echo "$VERSION" | cut -d. -f2)
+            if [[ "$MINOR" == "0" ]]; then
+              LTS_VERSION="$VERSION"
+            fi
+          done
+          if [[ -z "$LTS_VERSION" ]]; then
+            LTS_VERSION=$(echo "$SUPPORTED_VERSIONS" | head -n1)
+          fi
+          LATEST_VERSION=$(echo "$SUPPORTED_VERSIONS" | tail -n1)
+          echo "latest_version=$LATEST_VERSION" >> "$GITHUB_OUTPUT"
+          echo "lts_version=$LTS_VERSION" >> "$GITHUB_OUTPUT"
+          echo "all_versions=$(echo "$SUPPORTED_VERSIONS" | tr '\n' ',')" >> "$GITHUB_OUTPUT"
+      - name: Generate matrix
+        id: generate_matrix
+        run: |
+          SUPPORTED_VERSIONS=$(jq -r '.versions[] | select(.end_of_full_support == false) | .latest_release.release' .github/zabbix-versions.json | sort -V)
+          LTS_VERSION="${{ steps.fetch_versions.outputs.lts_version }}"
+          MATRIX_JSON='{"include":['
+          FIRST=true
+          for VERSION in $SUPPORTED_VERSIONS; do
+            [[ -z "$VERSION" ]] && continue
+            if [[ "$FIRST" != true ]]; then MATRIX_JSON+=','; fi
+            FIRST=false
+            MAJOR_MINOR=$(echo "$VERSION" | cut -d. -f1,2)
+            IS_LATEST="false"
+            if [[ "$VERSION" == "$LTS_VERSION" ]]; then IS_LATEST="true"; fi
+            MATRIX_JSON+="{\"zabbix_version\":\"$VERSION\",\"major_minor\":\"$MAJOR_MINOR\",\"is_latest\":$IS_LATEST}"
+          done
+          MATRIX_JSON+=']}'
+          echo "matrix=$MATRIX_JSON" >> "$GITHUB_OUTPUT"
+      - name: Update README with version table
+        id: update_readme
+        run: |
+          LATEST_VERSION='${{ steps.fetch_versions.outputs.latest_version }}'
+          LTS_VERSION='${{ steps.fetch_versions.outputs.lts_version }}'
+          ALL_VERSIONS='${{ steps.fetch_versions.outputs.all_versions }}'
+
+          echo "Latest version: $LATEST_VERSION"
+          echo "LTS version: $LTS_VERSION"
+          echo "All versions: $ALL_VERSIONS"
+
+          if [[ -n "$LATEST_VERSION" && -f "README.md" ]]; then
+            echo "Updating README.md with version information..."
+
+            TABLE="## Available Versions"
+            TABLE+="\n"
+            TABLE+="\n| Version | Tags | Description |"
+            TABLE+="\n|---------|------|-------------|"
+
+            for VERSION in $(echo "${ALL_VERSIONS%,}" | tr ',' ' ' | sort -Vr); do
+              [[ -z "$VERSION" ]] && continue
+              MAJOR=$(echo "$VERSION" | cut -d. -f1)
+              MINOR=$(echo "$VERSION" | cut -d. -f2)
+              if [[ "$VERSION" == "$LTS_VERSION" ]]; then
+                TABLE+="\n| $VERSION | \`latest\`, \`$VERSION\`, \`$MAJOR.$MINOR\` | LTS (Long-Term Support) version |"
+              elif [[ "$VERSION" == "$LATEST_VERSION" ]]; then
+                TABLE+="\n| $VERSION | \`$VERSION\`, \`$MAJOR.$MINOR\` | Latest stable version |"
+              else
+                TABLE+="\n| $VERSION | \`$VERSION\`, \`$MAJOR.$MINOR\` | Supported version |"
+              fi
+            done
+
+            TABLE+="\n\n> **Note:** The \`latest\` tag points to the LTS (Long-Term Support) version ($LTS_VERSION)."
+
+            if grep -q "## Available Versions" README.md; then
+              START_LINE=$(grep -n "## Available Versions" README.md | cut -d: -f1)
+              NEXT_SECTION=$(tail -n +$((START_LINE + 1)) README.md | grep -n "^## " | head -n1 | cut -d: -f1)
+              if [[ -n "$NEXT_SECTION" ]]; then
+                END_LINE=$((START_LINE + NEXT_SECTION))
+                head -n $((START_LINE - 1)) README.md > README.md.tmp
+                echo -e "$TABLE" >> README.md.tmp
+                tail -n +$END_LINE README.md >> README.md.tmp
+                mv README.md.tmp README.md
+              else
+                head -n $((START_LINE - 1)) README.md > README.md.tmp
+                echo -e "$TABLE" >> README.md.tmp
+                mv README.md.tmp README.md
+              fi
+            else
+              INTRO_LINE=$(grep -n "It includes a few additional binaries and scripts" README.md | cut -d: -f1)
+              if [[ -n "$INTRO_LINE" ]]; then
+                head -n "$INTRO_LINE" README.md > README.md.tmp
+                echo -e "\n$TABLE" >> README.md.tmp
+                tail -n +$((INTRO_LINE + 1)) README.md >> README.md.tmp
+                mv README.md.tmp README.md
+              fi
+            fi
+            echo "Updated README.md with version information"
+          else
+            echo "Warning: No version data or README.md not found"
+          fi
+
+      - name: Update GitHub organization references
+        id: update_org_refs
+        run: |
+          REPO_OWNER="${{ github.repository_owner }}"
+          REPO_NAME="zabbix-proxy-sqlite3"
+          echo "Repository owner: $REPO_OWNER"
+          echo "Repository name: $REPO_NAME"
+          if [[ -f "README.md" ]]; then
+            echo "Updating GitHub organization references in README.md..."
+            sed -i "s|github\.com/[^/]*/zabbix-proxy-sqlite3/|github.com/$REPO_OWNER/$REPO_NAME/|g" README.md
+            sed -i "s|img\.shields\.io/github/v/release/[^/]*/zabbix-proxy-sqlite3|img.shields.io/github/v/release/$REPO_OWNER/$REPO_NAME|g" README.md
+            sed -i "s|img\.shields\.io/github/license/[^/]*/zabbix-proxy-sqlite3|img.shields.io/github/license/$REPO_OWNER/$REPO_NAME|g" README.md
+            sed -i "s|ghcr\.io/[^/]*/zabbix-proxy-sqlite3|ghcr.io/$REPO_OWNER/$REPO_NAME|g" README.md
+            sed -i "s|github\.com/[^/]*/zabbix-proxy-sqlite3|github.com/$REPO_OWNER/$REPO_NAME|g" README.md
+            echo "Updated all GitHub organization references"
+          else
+            echo "Warning: README.md not found"
+          fi
+
+  check-for-changes:
+    needs: update-versions
+    runs-on: ubuntu-latest
+    outputs:
+      should_rebuild: ${{ steps.check.outputs.should_rebuild }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 5  # Fetch more history for better change detection
+
+      - name: Check for changes that require container rebuilds
+        id: check
+        run: |
+          # Check if manual force rebuild is requested
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ github.event.inputs.force_rebuild }}" == "true" ]]; then
+            echo "Force rebuild requested via workflow dispatch"
+            echo "should_rebuild=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Check if this is a scheduled run (daily cron)
+          if [[ "${{ github.event_name }}" == "schedule" ]]; then
+            echo "Scheduled run, will rebuild containers"
+            echo "should_rebuild=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Check for changes in important files
+          if git diff --name-only HEAD~1 HEAD | grep -q -E '^Dockerfile$|^scripts/|^\.github/workflows/ci-release\.yml$'; then
+            echo "Changes detected in Dockerfile or related files"
+            echo "should_rebuild=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No changes that would require rebuilding containers"
+            echo "should_rebuild=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  build-and-push:
+    needs: [update-versions, check-for-changes]
+    if: needs.check-for-changes.outputs.should_rebuild == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+      contents: write
+    env:
+      IMAGE_NAME: zabbix-proxy-sqlite3
+    strategy:
+      matrix: ${{ fromJson(needs.update-versions.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Log in to registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push images
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          build-args: |
+            ZABBIX_VERSION=ubuntu-${{ matrix.zabbix_version }}
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ matrix.zabbix_version }}
+            ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ matrix.major_minor }}
+            ${{ matrix.is_latest == true && format('ghcr.io/{0}/{1}:latest', github.repository_owner, env.IMAGE_NAME) || '' }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.zabbix.upstream.version=${{ matrix.zabbix_version }}
+      - name: Generate release notes
+        id: release_notes
+        run: |
+          VERSION="${{ matrix.zabbix_version }}"
+          MAJOR_MINOR="${{ matrix.major_minor }}"
+          IS_LATEST="${{ matrix.is_latest }}"
+          cat > release_notes.md <<EOF
+          ## Zabbix Proxy SQLite3 for AV Systems - v$VERSION
+
+          ### 📦 Base Version
+          - **Zabbix Upstream**: $VERSION
+
+          ### 🛠️ Container Features
+          - **Network Monitoring**: ping, traceroute, mtr, fping, nmap, netcat
+          - **SNMP Support**: Full SNMP toolkit with MIB support
+          - **Kubernetes**: kubectl for container orchestration monitoring
+          - **Speed Testing**: Dual implementation (Cloudflare Speedtest & Ookla Speedtest CLI)
+          - **Custom Scripts**: AV-specific monitoring utilities
+
+          ### 📥 Container Images
+          ```bash
+          # Pull this specific version
+          docker pull ghcr.io/${{ github.repository_owner }}/zabbix-proxy-sqlite3:$VERSION
+          ```
+
+          ### 🏷️ Available Tags
+          - \\`$VERSION\\` - This specific version
+          - \\`$MAJOR_MINOR\\` - Latest patch for this major.minor
+          $(if [ "$IS_LATEST" = "true" ]; then echo "- \\`latest\\` - LTS version (recommended)"; fi)
+          EOF
+      - name: Extract SBOM from built image
+        run: |
+          IMAGE_TAG=ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ matrix.zabbix_version }}
+          CONTAINER_ID=$(docker create $IMAGE_TAG)
+          docker cp $CONTAINER_ID:/usr/local/share/zabbix-proxy-sbom.txt ./zabbix-proxy-sbom-${{ matrix.zabbix_version }}.txt
+          docker rm $CONTAINER_ID
+      - name: Validate SBOM contents
+        id: validate_sbom
+        run: |
+          SBOM=./zabbix-proxy-sbom-${{ matrix.zabbix_version }}.txt
+          echo "## SBOM Validation for $SBOM" >> $GITHUB_STEP_SUMMARY
+          REQUIRED_TOOLS=(zabbix-proxy-sqlite3 kubectl jq nmap fping mtr traceroute iproute2 snmpwalk curl wget expect jo nano gnupg tcpdump netcat)
+          # Check either Ookla speedtest or Cloudflare speedtest
+          if grep -q "^ookla-speedtest:" "$SBOM" || grep -q "^cloudflare-speedtest:" "$SBOM"; then
+            echo ":white_check_mark: At least one speedtest implementation found" >> $GITHUB_STEP_SUMMARY
+          else
+            echo ":x: No speedtest implementation found" >> $GITHUB_STEP_SUMMARY
+            MISSING=1
+          fi
+          MISSING=0
+
+          echo "### SBOM Contents" >> $GITHUB_STEP_SUMMARY
+          cat "$SBOM" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          echo "### Validation Results" >> $GITHUB_STEP_SUMMARY
+          for TOOL in "${REQUIRED_TOOLS[@]}"; do
+            if ! grep -q "^$TOOL:" "$SBOM"; then
+              echo ":x: $TOOL version not found in SBOM" >> $GITHUB_STEP_SUMMARY
+              MISSING=1
+            elif grep -q "^$TOOL: Not installed properly" "$SBOM"; then
+              echo ":warning: $TOOL installed but may have issues - $(grep "^$TOOL:" "$SBOM")" >> $GITHUB_STEP_SUMMARY
+              MISSING=1
+            else
+              VERSION=$(grep "^$TOOL:" "$SBOM" | sed 's/^[^:]*: //')
+              echo ":white_check_mark: $TOOL version found: $VERSION" >> $GITHUB_STEP_SUMMARY
+            fi
+          done
+          if [ "$MISSING" -eq 1 ]; then
+            echo "::warning::Some required tools are missing from the SBOM or have installation issues. See summary for details."
+          else
+            echo "All required tools are present in the SBOM."
+          fi
+      - name: Upload SBOM as release asset
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ matrix.zabbix_version }}
+          name: "Zabbix Proxy SQLite3 AV - v${{ matrix.zabbix_version }}"
+          body_path: release_notes.md
+          draft: false
+          prerelease: false
+          make_latest: ${{ matrix.is_latest == true }}
+          files: ./zabbix-proxy-sbom-${{ matrix.zabbix_version }}.txt
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ matrix.zabbix_version }}
+          name: "Zabbix Proxy SQLite3 AV - v${{ matrix.zabbix_version }}"
+          body_path: release_notes.md
+          draft: false
+          prerelease: false
+          make_latest: ${{ matrix.is_latest == true }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
