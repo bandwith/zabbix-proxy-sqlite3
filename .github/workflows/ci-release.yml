@@ -221,7 +221,6 @@ jobs:
       IMAGE_NAME: zabbix-proxy-sqlite3
       BUILDCACHE_TAG: buildcache
       CACHE_PATH: /tmp/buildkit-cache
-      CACHE_MAX_SIZE: 2g
     strategy:
       matrix: ${{ fromJson(needs.update-versions.outputs.matrix) }}
     steps:
@@ -238,8 +237,9 @@ jobs:
       - name: Set up BuildKit cache
         uses: reproducible-containers/buildkit-cache-dance@v2.1.2
         with:
-          cache-path: ${{ env.CACHE_PATH }}
-          cache-max-size: ${{ env.CACHE_MAX_SIZE }}
+          cache-source: ${{ env.CACHE_PATH }}
+          cache-target: ${{ env.CACHE_PATH }}
+          scratch-dir: /tmp/buildkit-cache-scratch
 
       - name: Build and push images
         uses: docker/build-push-action@v6
