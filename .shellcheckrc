@@ -1,0 +1,5 @@
+# Disable warnings about unnecessary ${} on arithmetic operations
+disable=SC2004
+
+# Disable warnings about using multiple redirects
+disable=SC2129

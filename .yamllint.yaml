@@ -1,0 +1,24 @@
+extends: default
+
+rules:
+  # Set acceptable line length for GitHub Actions workflows
+  line-length:
+    max: 200
+    level: warning
+
+  # Configure indentation (2 spaces)
+  indentation:
+    spaces: 2
+    indent-sequences: consistent
+
+  # Don't require document start marker (---)
+  document-start:
+    present: false
+
+  # Configure truthy values
+  truthy:
+    allowed-values: ['true', 'false', 'yes', 'no', 'on', 'off']
+
+  # Configure hyphen spacing based on your existing style
+  hyphens:
+    max-spaces-after: 3
