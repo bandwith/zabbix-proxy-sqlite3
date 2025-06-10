@@ -26,6 +26,8 @@ on:
 permissions:
   contents: write
   packages: write
+  actions: read  # Added for workflow runs
+  id-token: write  # Added for improved token handling
 
 jobs:
   update-versions:
@@ -217,6 +219,7 @@ jobs:
       packages: write
       contents: write
       id-token: write
+      actions: read
     env:
       IMAGE_NAME: zabbix-proxy-sqlite3
       BUILDCACHE_TAG: buildcache
@@ -232,7 +235,11 @@ jobs:
           driver-opts: image=moby/buildkit:latest
 
       - name: Log in to GitHub Container Registry
-        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up BuildKit cache
         uses: reproducible-containers/buildkit-cache-dance@v2.1.2
