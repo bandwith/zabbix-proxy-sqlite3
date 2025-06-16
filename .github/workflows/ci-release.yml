@@ -152,7 +152,7 @@ jobs:
         id: update_org_refs
         run: |
           REPO_OWNER="${{ github.repository_owner }}"
-          REPO_NAME="zabbix-proxy-sqlite3"
+          REPO_NAME="${{ github.repository }}"
           echo "Repository owner: $REPO_OWNER"
           echo "Repository name: $REPO_NAME"
           if [[ -f "README.md" ]]; then
