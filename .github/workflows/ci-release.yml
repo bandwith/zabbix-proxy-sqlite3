@@ -226,6 +226,9 @@ jobs:
       id-token: write
       actions: read
       security-events: write  # For security scanning
+    outputs:
+      release_id: ${{ steps.create_release.outputs.id }}
+      release_tag: ${{ matrix.zabbix_version }}
     env:
       IMAGE_NAME: zabbix-proxy-sqlite3
       BUILDCACHE_TAG: buildcache
@@ -384,7 +387,8 @@ jobs:
           else
             echo "All required tools are present in the SBOM."
           fi
-      - name: Upload SBOM as release asset
+      - name: Create GitHub Release with SBOM asset
+        id: create_release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ matrix.zabbix_version }}
@@ -394,16 +398,46 @@ jobs:
           prerelease: false
           make_latest: ${{ matrix.is_latest == true }}
           files: ./zabbix-proxy-sbom-${{ matrix.zabbix_version }}.txt
+          fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+
+  cleanup-on-failure:
+    needs: [build-and-push]
+    if: always() && needs.build-and-push.result == 'failure'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete release on build failure
+        uses: actions/github-script@v7
         with:
-          tag_name: ${{ matrix.zabbix_version }}
-          name: "Zabbix Proxy SQLite3 AV - v${{ matrix.zabbix_version }}"
-          body_path: release_notes.md
-          draft: false
-          prerelease: false
-          make_latest: ${{ matrix.is_latest == true }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const releaseId = '${{ needs.build-and-push.outputs.release_id }}';
+            if (releaseId) {
+              console.log(`Deleting release ID ${releaseId} due to build failure`);
+              try {
+                await github.rest.repos.deleteRelease({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  release_id: parseInt(releaseId)
+                });
+                console.log(`Successfully deleted release ID ${releaseId}`);
+              } catch (error) {
+                console.error(`Failed to delete release: ${error.message}`);
+              }
+            }
+
+            const tagName = '${{ needs.build-and-push.outputs.release_tag }}';
+            if (tagName) {
+              console.log(`Deleting tag ${tagName} due to build failure`);
+              try {
+                await github.rest.git.deleteRef({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  ref: `tags/${tagName}`
+                });
+                console.log(`Successfully deleted tag ${tagName}`);
+              } catch (error) {
+                console.error(`Failed to delete tag: ${error.message}`);
+              }
+            }

@@ -72,7 +72,7 @@ function check_binary_security {
         if [[ -w "$binary_path" ]]; then
             echo "Warning: $binary_path is writable by current user - potential security risk" >&2
         fi
-        
+
         # Check for suspicious file size (basic integrity check)
         local file_size
         file_size=$(stat -c%s "$binary_path" 2>/dev/null || echo "0")
