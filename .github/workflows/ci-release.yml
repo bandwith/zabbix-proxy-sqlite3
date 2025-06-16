@@ -22,12 +22,17 @@ on:
       - 'scripts/**'
       - '.github/workflows/ci-release.yml'
 
-# Add permissions at workflow level
+# Security: Minimal required permissions
 permissions:
   contents: write
   packages: write
-  actions: read  # Added for workflow runs
-  id-token: write  # Added for improved token handling
+  actions: read
+  id-token: write
+  security-events: write  # For security scanning
+
+env:
+  # Security: Define allowed registries
+  ALLOWED_REGISTRIES: "ghcr.io"
 
 jobs:
   update-versions:
@@ -220,6 +225,7 @@ jobs:
       contents: write
       id-token: write
       actions: read
+      security-events: write  # For security scanning
     env:
       IMAGE_NAME: zabbix-proxy-sqlite3
       BUILDCACHE_TAG: buildcache
@@ -229,11 +235,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Security: Verify checkout integrity
+      - name: Verify repository integrity
+        run: |
+          echo "Verifying repository state..."
+          git fsck --no-progress --no-dangling
+          echo "Repository integrity check passed"
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
         with:
           driver-opts: image=moby/buildkit:latest
 
+      # Security: Use OIDC token instead of PAT when possible
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
         with:
@@ -248,11 +262,14 @@ jobs:
           cache-target: ${{ env.CACHE_PATH }}
           scratch-dir: /tmp/buildkit-cache-scratch
 
+      # Security: Generate SBOM during build
       - name: Build and push images
         uses: docker/build-push-action@v6
         with:
           context: .
           push: true
+          provenance: true  # Security: Enable provenance attestation
+          sbom: true       # Security: Generate SBOM
           cache-from: |
             type=gha,scope=buildkit-${{ matrix.zabbix_version }}
             type=registry,ref=ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ env.BUILDCACHE_TAG }}
@@ -271,6 +288,34 @@ jobs:
             org.opencontainers.image.description=Zabbix Proxy SQLite3 for AV Systems
             org.opencontainers.image.licenses=AGPL-3.0
             org.zabbix.upstream.version=${{ matrix.zabbix_version }}
+
+      # Security: Scan container for vulnerabilities
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ matrix.zabbix_version }}
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          severity: 'CRITICAL,HIGH'
+
+      # Security: Upload vulnerability scan results
+      - name: Upload Trivy scan results to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+      # Security: Fail build on critical vulnerabilities
+      - name: Check for critical vulnerabilities
+        run: |
+          if [ -f "trivy-results.sarif" ]; then
+            CRITICAL_COUNT=$(jq '.runs[0].results | length' trivy-results.sarif)
+            if [ "$CRITICAL_COUNT" -gt 0 ]; then
+              echo "::error::Found $CRITICAL_COUNT critical/high severity vulnerabilities"
+              echo "Please review the Security tab for details"
+              exit 1
+            fi
+          fi
 
       - name: Prune build cache (weekly)
         if: github.event_name == 'schedule'

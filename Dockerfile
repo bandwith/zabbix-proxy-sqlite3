@@ -77,10 +77,6 @@ RUN apt-get update && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
-# Make wrapper executable and create symlink
-RUN chmod +x /usr/local/bin/speedtest-wrapper && \
-    mv /usr/local/bin/speedtest-wrapper /usr/local/bin/speedtest-any
-
 # Install Cloudflare Speedtest Python CLI (cloudflarepycli)
 # hadolint ignore=DL3008
 WORKDIR /tmp
