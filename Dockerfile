@@ -29,7 +29,10 @@ RUN mkdir -p /usr/share/snmp/mibs/custom && \
 # - Data processing: jq, jo
 # Note: We don't pin versions to ensure we get security updates
 # hadolint ignore=DL3008,DL4001,DL3047
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && \
+    # Configure apt to prefer security repositories
+    echo 'APT::Default-Release "noble";' > /etc/apt/apt.conf.d/99defaultrelease && \
+    apt-get install -y --no-install-recommends \
     # Network diagnostic tools
     iputils-ping \
     iputils-tracepath \
@@ -63,6 +66,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     # Security tools
     apt-transport-https \
     # Clean up to reduce image size
+    && apt-get upgrade -y \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
@@ -72,6 +76,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Install necessary dependencies
 # hadolint ignore=DL3008
 RUN apt-get update && \
+    # Apply security updates
+    apt-get upgrade -y && \
     apt-get install -y --no-install-recommends \
     gnupg ca-certificates apt-transport-https curl dirmngr nodejs npm && \
     apt-get clean && \
@@ -84,12 +90,16 @@ RUN echo "Installing Cloudflare Python Speedtest CLI..." && \
     # Make sure pip is installed
     # hadolint ignore=DL3008
     apt-get update && \
+    # Apply security updates
+    apt-get upgrade -y && \
     # hadolint ignore=DL3008
     apt-get install -y --no-install-recommends python3-pip python3-setuptools python3-venv && \
     # Create a virtual environment for our Python packages
     python3 -m venv /opt/venv && \
     # Install cloudflarepycli from PyPI in the virtual environment
     /opt/venv/bin/pip install --no-cache-dir cloudflarepycli && \
+    # Update pip and dependencies in venv
+    /opt/venv/bin/pip install --no-cache-dir --upgrade pip setuptools wheel && \
     # Create a wrapper script for our cfspeedtest command
     echo '#!/bin/bash' > /usr/local/bin/cfspeedtest && \
     echo '/opt/venv/bin/cfspeedtest "$@"' >> /usr/local/bin/cfspeedtest && \
@@ -135,14 +145,24 @@ RUN echo "# SNMP configuration for custom MIBs" > /etc/snmp/snmp.conf && \
     chown root:root /etc/snmp/snmp.conf && \
     chmod 644 /etc/snmp/snmp.conf
 
-# Cleanup
+# Configure more secure apt sources with priority on security updates
 WORKDIR /
 RUN echo "deb http://archive.ubuntu.com/ubuntu noble main restricted universe multiverse" > /etc/apt/sources.list && \
     echo "deb http://archive.ubuntu.com/ubuntu noble-updates main restricted universe multiverse" >> /etc/apt/sources.list && \
     echo "deb http://archive.ubuntu.com/ubuntu noble-backports main restricted universe multiverse" >> /etc/apt/sources.list && \
+    echo "# Priority on security updates" >> /etc/apt/sources.list && \
     echo "deb http://security.ubuntu.com/ubuntu noble-security main restricted universe multiverse" >> /etc/apt/sources.list
-# hadolint ignore=SC2015
+
+# Create apt preferences file to prioritize security updates
+RUN mkdir -p /etc/apt/preferences.d && \
+    echo "Package: *" > /etc/apt/preferences.d/99-security-updates && \
+    echo "Pin: release l=Ubuntu,o=Ubuntu,a=noble-security" >> /etc/apt/preferences.d/99-security-updates && \
+    echo "Pin-Priority: 990" >> /etc/apt/preferences.d/99-security-updates
+
+# Update and upgrade with security fixes
+# hadolint ignore=SC2015,DL3008
 RUN apt-get update && \
+    apt-get upgrade -y && \
     apt-get autoremove -y && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* /root/.cache/pip/* 2>/dev/null || true
@@ -194,6 +214,14 @@ RUN mkdir -p /usr/local/share && \
     chown -R 1997:1997 /usr/local/share && \
     chmod 755 /usr/local/share && \
     chmod 664 /usr/local/share/zabbix-proxy-sbom.txt
+
+# Final security updates before switching back to Zabbix user
+# hadolint ignore=DL3008
+RUN apt-get update && \
+    apt-get upgrade -y && \
+    apt-get autoremove -y && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
 
 # Switch back to Zabbix user
 USER 1997
