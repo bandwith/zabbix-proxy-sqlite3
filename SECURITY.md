@@ -10,12 +10,14 @@ We provide security updates for the following versions:
 | 7.0.x   | :white_check_mark: |
 | < 7.0   | :x:                |
 
+**Note**: Security support is provided on a best effort basis for this community project.
+
 ## Security Features
 
 ### Container Security
 - **Non-root execution**: Container runs as UID 1997 (non-privileged user)
 - **Minimal attack surface**: Only essential packages are installed
-- **Vulnerability scanning**: Automated security scanning with Trivy
+- **Vulnerability scanning**: Automated security scanning with Trivy (non-blocking for awareness)
 - **Supply chain security**: SBOM generation and provenance attestation
 
 ### Script Security
@@ -31,20 +33,32 @@ We provide security updates for the following versions:
 
 ## Reporting a Vulnerability
 
-If you discover a security vulnerability, please report it responsibly:
+### Critical Security Issues
 
-1. **DO NOT** create a public GitHub issue
-2. Email security details to: [your-security-email@example.com]
-3. Include:
-   - Description of the vulnerability
-   - Steps to reproduce
-   - Potential impact
-   - Suggested fix (if any)
+For **critical security vulnerabilities** that affect Zabbix core functionality:
+
+1. **Report directly to Zabbix**: Follow [Zabbix's official security reporting process](https://www.zabbix.com/security)
+2. These issues should be handled by the upstream Zabbix security team
+
+### Implementation-Specific Issues
+
+For security issues **specific to this SQLite3 proxy implementation**:
+
+1. Create a **pull request** with:
+   - Description of the security concern
+   - Proposed fix or mitigation
+   - Test cases (if applicable)
+
+2. For sensitive issues that shouldn't be public initially:
+   - Create a draft pull request
+   - Contact maintainers through GitHub to discuss privately first
 
 ### Response Timeline
-- **Initial response**: Within 48 hours
-- **Investigation**: Within 1 week
-- **Fix deployment**: Within 2 weeks for critical issues
+
+**Best effort basis**:
+- **Initial response**: Within 1 week
+- **Investigation and fixes**: Timeline depends on maintainer availability
+- **Critical upstream issues**: Refer to Zabbix's security timeline
 
 ### Security Best Practices
 
@@ -62,12 +76,6 @@ When using this container:
 2. **SNMP Community Strings**: Use strong, unique community strings for SNMP monitoring
 3. **Database Access**: Secure the SQLite database file with appropriate file permissions
 
-## Security Contact
-
-For security-related questions or concerns:
-- Email: [your-security-email@example.com]
-- PGP Key: [Link to your PGP public key]
-
 ## Acknowledgments
 
-We appreciate responsible disclosure of security vulnerabilities and will acknowledge reporters (with their permission) in our security advisories.
+We appreciate responsible disclosure of security vulnerabilities and will acknowledge contributors in our release notes. For critical Zabbix core issues, please follow Zabbix's official acknowledgment process.
