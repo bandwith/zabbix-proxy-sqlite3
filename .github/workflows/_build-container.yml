@@ -180,7 +180,7 @@ jobs:
             org.zabbix.container.immutable=true
 
       # Security: Scan container for vulnerabilities
-      - name: Run Trivy vulnerability scanner
+      - name: Run Trivy vulnerability scanner for ${{ steps.local_version.outputs.local_version }}
         uses: aquasecurity/trivy-action@master
         id: trivy_scan
         if: success() && steps.local_version.outputs.local_version != ''
@@ -192,14 +192,14 @@ jobs:
           severity: 'CRITICAL,HIGH'
 
       # Security: Upload vulnerability scan results
-      - name: Upload Trivy scan results to GitHub Security tab
+      - name: Upload Trivy scan results for ${{ steps.local_version.outputs.local_version }} to GitHub Security tab
         uses: github/codeql-action/upload-sarif@v3
         if: success() && steps.trivy_scan.outcome == 'success' && steps.trivy_scan.conclusion == 'success'
         with:
           sarif_file: 'trivy-results.sarif'
 
       # Generate SPDX SBOM and submit to GitHub dependency graph
-      - name: Generate SPDX SBOM
+      - name: Generate SPDX SBOM for ${{ steps.local_version.outputs.local_version }}
         uses: aquasecurity/trivy-action@master
         id: spdx_sbom
         if: success() && steps.local_version.outputs.local_version != ''
@@ -210,7 +210,7 @@ jobs:
           output: 'sbom-spdx.json'
 
       # Validate SPDX SBOM contents
-      - name: Validate SPDX SBOM
+      - name: Validate SPDX SBOM for ${{ steps.local_version.outputs.local_version }}
         id: validate_spdx_sbom
         if: success() && steps.spdx_sbom.outcome == 'success' && steps.spdx_sbom.conclusion == 'success'
         run: |
@@ -238,7 +238,7 @@ jobs:
           fi
 
       # Generate SBOM and submit to GitHub dependency graph using Anchore SBOM Action
-      - name: Generate SBOM and submit to GitHub dependency graph
+      - name: Generate SBOM and submit ${{ steps.local_version.outputs.local_version }} to GitHub dependency graph
         uses: anchore/sbom-action@v0
         if: success() && steps.local_version.outputs.local_version != ''
         continue-on-error: true
@@ -248,7 +248,7 @@ jobs:
           dependency-snapshot: true
 
       # Verify Docker Image Attestations
-      - name: Verify Docker Image Attestations
+      - name: Verify Docker Image Attestations for ${{ steps.local_version.outputs.local_version }}
         if: success() && steps.local_version.outputs.local_version != ''
         run: |
           echo "## Docker Image Attestations" >> $GITHUB_STEP_SUMMARY
@@ -369,7 +369,7 @@ jobs:
           $(if [ "$BASE_VERSION" = "${{ inputs.latest_version }}" ]; then echo "- \\`latest\\` - Latest version with highest version number"; fi)
           EOF
 
-      - name: Extract SBOM from built image
+      - name: Extract SBOM from ${{ steps.local_version.outputs.local_version }} built image
         if: success() && steps.local_version.outputs.local_version != ''
         run: |
           IMAGE_TAG=ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ steps.local_version.outputs.local_version }}
@@ -378,7 +378,7 @@ jobs:
           docker rm $CONTAINER_ID
 
       # Verify image metadata was properly applied
-      - name: Verify OCI metadata
+      - name: Verify OCI metadata for ${{ steps.local_version.outputs.local_version }}
         if: success() && steps.local_version.outputs.local_version != ''
         run: |
           echo "## OCI Metadata Validation" >> $GITHUB_STEP_SUMMARY
@@ -412,7 +412,7 @@ jobs:
             fi
           done
 
-      - name: Validate SBOM contents
+      - name: Validate SBOM contents for ${{ steps.local_version.outputs.local_version }}
         id: validate_sbom
         run: |
           SBOM=./zabbix-proxy-sbom-${{ inputs.zabbix_version }}.txt
@@ -450,7 +450,7 @@ jobs:
             echo "All required tools are present in the SBOM."
           fi
 
-      - name: Create GitHub Release with SBOM asset
+      - name: Create GitHub Release ${{ steps.local_version.outputs.local_version }} with SBOM asset
         id: create_release
         uses: softprops/action-gh-release@v2
         with:
