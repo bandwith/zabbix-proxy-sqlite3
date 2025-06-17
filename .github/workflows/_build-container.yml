@@ -36,7 +36,7 @@ jobs:
       security-events: write
     outputs:
       release_id: ${{ steps.create_release.outputs.id }}
-      release_tag: ${{ inputs.zabbix_version }}
+      release_tag: ${{ steps.local_version.outputs.local_version }}
     env:
       IMAGE_NAME: zabbix-proxy-sqlite3
     steps:
@@ -67,6 +67,13 @@ jobs:
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Use the dedicated local version workflow to determine if there are local changes
+      - name: Determine local version with patch increment if needed
+        id: local_version
+        uses: ./.github/workflows/_local-version.yml
+        with:
+          zabbix_version: ${{ inputs.zabbix_version }}
+
       # Security: Generate SBOM during build with max-level provenance
       - name: Build and push images
         uses: docker/build-push-action@v6
@@ -83,9 +90,19 @@ jobs:
           build-args: |
             ZABBIX_VERSION=ubuntu-${{ inputs.zabbix_version }}
           tags: |
-            ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ inputs.zabbix_version }}
+            # Always tag with the local version (which may include .N suffix for local changes)
+            ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ steps.local_version.outputs.local_version }}
+
+            # Always tag with major.minor
             ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ inputs.major_minor }}
+
+            # Only tag with original Zabbix version if this is not a local change
+            ${{ steps.local_version.outputs.is_local_change == 'false' && format('ghcr.io/{0}/{1}:{2}', github.repository_owner, env.IMAGE_NAME, inputs.zabbix_version) || '' }}
+
+            # LTS tag if applicable
             ${{ inputs.is_latest == 'true' && format('ghcr.io/{0}/{1}:lts', github.repository_owner, env.IMAGE_NAME) || '' }}
+
+            # Latest tag if applicable
             ${{ inputs.zabbix_version == inputs.latest_version && format('ghcr.io/{0}/{1}:latest', github.repository_owner, env.IMAGE_NAME) || '' }}
           labels: |
             # Basic metadata
@@ -115,7 +132,7 @@ jobs:
       - name: Run Trivy vulnerability scanner
         uses: aquasecurity/trivy-action@master
         with:
-          image-ref: ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ inputs.zabbix_version }}
+          image-ref: ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ steps.local_version.outputs.local_version }}
           format: 'sarif'
           output: 'trivy-results.sarif'
           severity: 'CRITICAL,HIGH'
@@ -131,7 +148,7 @@ jobs:
       - name: Generate SPDX SBOM
         uses: aquasecurity/trivy-action@master
         with:
-          image-ref: ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ inputs.zabbix_version }}
+          image-ref: ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ steps.local_version.outputs.local_version }}
           format: 'spdx-json'
           output: 'sbom-spdx.json'
 
@@ -166,15 +183,15 @@ jobs:
       - name: Generate SBOM and submit to GitHub dependency graph
         uses: anchore/sbom-action@v0
         with:
-          image: ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ inputs.zabbix_version }}
-          artifact-name: sbom-${{ inputs.zabbix_version }}.spdx.json
+          image: ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ steps.local_version.outputs.local_version }}
+          artifact-name: sbom-${{ steps.local_version.outputs.local_version }}.spdx.json
           dependency-snapshot: true
 
       # Verify Docker Image Attestations
       - name: Verify Docker Image Attestations
         run: |
           echo "## Docker Image Attestations" >> $GITHUB_STEP_SUMMARY
-          echo "Verifying attestations for image: ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ inputs.zabbix_version }}" >> $GITHUB_STEP_SUMMARY
+          echo "Verifying attestations for image: ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ steps.local_version.outputs.local_version }}" >> $GITHUB_STEP_SUMMARY
 
           # Install Cosign if not already available
           if ! command -v cosign &> /dev/null; then
@@ -188,7 +205,7 @@ jobs:
           # Verify SBOM attestation
           echo "### SBOM Attestation" >> $GITHUB_STEP_SUMMARY
           if cosign verify-attestation --type cyclonedx \
-             ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ inputs.zabbix_version }} \
+             ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ steps.local_version.outputs.local_version }} \
              --certificate-identity-regexp "https://github.com/docker/build-push-action" | grep -q "Verification succeeded"; then
             echo ":white_check_mark: SBOM attestation verified" >> $GITHUB_STEP_SUMMARY
           else
@@ -198,7 +215,7 @@ jobs:
           # Verify Provenance attestation
           echo "### Provenance Attestation (SLSA)" >> $GITHUB_STEP_SUMMARY
           if cosign verify-attestation --type slsaprovenance \
-             ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ inputs.zabbix_version }} \
+             ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ steps.local_version.outputs.local_version }} \
              --certificate-identity-regexp "https://github.com/docker/build-push-action" | grep -q "Verification succeeded"; then
             echo ":white_check_mark: Provenance attestation verified with mode=max" >> $GITHUB_STEP_SUMMARY
             echo ":information_source: This means your image includes detailed build information that can be verified." >> $GITHUB_STEP_SUMMARY
@@ -223,15 +240,30 @@ jobs:
       - name: Generate release notes
         id: release_notes
         run: |
-          VERSION="${{ inputs.zabbix_version }}"
+          LOCAL_VERSION="${{ steps.local_version.outputs.local_version }}"
+          BASE_VERSION="${{ inputs.zabbix_version }}"
           MAJOR_MINOR="${{ inputs.major_minor }}"
           IS_LATEST="${{ inputs.is_latest }}"
-          cat > release_notes.md <<EOF
-          ## Zabbix Proxy SQLite3 for AV Systems - v$VERSION
+          IS_LOCAL_CHANGE="${{ steps.local_version.outputs.is_local_change }}"
 
-          ### 📦 Base Version
-          - **Zabbix Upstream**: $VERSION
+          # Start building release notes
+          cat > release_notes.md <<EOF
+          ## Zabbix Proxy SQLite3 for AV Systems - v$LOCAL_VERSION
+
+          ### 📦 Version Information
+          - **Zabbix Upstream**: $BASE_VERSION
           - **Build Date**: $(date -u +'%Y-%m-%d %H:%M UTC')
+          EOF
+
+          # Add local change information if applicable
+          if [ "$IS_LOCAL_CHANGE" = "true" ]; then
+            cat >> release_notes.md <<EOF
+          - **Local Changes**: Yes (version $LOCAL_VERSION contains customizations beyond upstream Zabbix)
+          EOF
+          fi
+
+          # Continue with the rest of the release notes
+          cat >> release_notes.md <<EOF
 
           ### 🛠️ Container Features
           - **Network Monitoring**: ping, traceroute, mtr, fping, nmap, netcat
@@ -242,19 +274,19 @@ jobs:
 
           ### � Security Assets
           - **SBOMs**: This release includes two Software Bill of Materials files:
-             - \`zabbix-proxy-sbom-$VERSION.txt\`: Custom detailed SBOM with tool versions
+             - \`zabbix-proxy-sbom-$BASE_VERSION.txt\`: Custom detailed SBOM with tool versions
              - \`sbom-spdx.json\`: Standard SPDX format for automated scanning
 
           ### �📥 Container Images
           ```bash
           # Pull this specific version
-          docker pull ghcr.io/${{ github.repository_owner }}/zabbix-proxy-sqlite3:$VERSION
+          docker pull ghcr.io/${{ github.repository_owner }}/zabbix-proxy-sqlite3:$LOCAL_VERSION
           ```
 
           ### 📋 Container Metadata
           This image includes comprehensive OCI metadata for reproducible builds:
           - **Title**: Zabbix Proxy SQLite3 for AV Systems
-          - **Version**: $VERSION
+          - **Version**: $LOCAL_VERSION
           - **Created**: $(date -u +'%Y-%m-%d %H:%M UTC')
           - **Source**: ${{ github.server_url }}/${{ github.repository }}
           - **Revision**: Full git commit SHA
@@ -262,24 +294,25 @@ jobs:
           - **License**: AGPL-3.0
 
           ### 🏷️ Available Tags
-          - \\`$VERSION\\` - This specific version
+          - \\`$LOCAL_VERSION\\` - This specific version
           - \\`$MAJOR_MINOR\\` - Latest patch for this major.minor
+          $(if [ "$IS_LOCAL_CHANGE" = "false" ]; then echo "- \\`$BASE_VERSION\\` - Upstream Zabbix version"; fi)
           $(if [ "$IS_LATEST" = "true" ]; then echo "- \\`lts\\` - Long-Term Support version (most stable)"; fi)
-          $(if [ "$VERSION" = "${{ inputs.latest_version }}" ]; then echo "- \\`latest\\` - Latest bleeding edge version"; fi)
+          $(if [ "$BASE_VERSION" = "${{ inputs.latest_version }}" ]; then echo "- \\`latest\\` - Latest bleeding edge version"; fi)
           EOF
 
       - name: Extract SBOM from built image
         run: |
-          IMAGE_TAG=ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ inputs.zabbix_version }}
+          IMAGE_TAG=ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ steps.local_version.outputs.local_version }}
           CONTAINER_ID=$(docker create $IMAGE_TAG)
-          docker cp $CONTAINER_ID:/usr/local/share/zabbix-proxy-sbom.txt ./zabbix-proxy-sbom-${{ inputs.zabbix_version }}.txt
+          docker cp $CONTAINER_ID:/usr/local/share/zabbix-proxy-sbom.txt ./zabbix-proxy-sbom-${{ steps.local_version.outputs.local_version }}.txt
           docker rm $CONTAINER_ID
 
       # Verify image metadata was properly applied
       - name: Verify OCI metadata
         run: |
           echo "## OCI Metadata Validation" >> $GITHUB_STEP_SUMMARY
-          IMAGE_TAG=ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ inputs.zabbix_version }}
+          IMAGE_TAG=ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ steps.local_version.outputs.local_version }}
 
           echo "Inspecting image metadata for $IMAGE_TAG..." >> $GITHUB_STEP_SUMMARY
           # Use docker inspect to get the labels
@@ -351,14 +384,14 @@ jobs:
         id: create_release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ inputs.zabbix_version }}
-          name: "Zabbix Proxy SQLite3 AV - v${{ inputs.zabbix_version }}"
+          tag_name: ${{ steps.local_version.outputs.local_version }}
+          name: "Zabbix Proxy SQLite3 AV - v${{ steps.local_version.outputs.local_version }}"
           body_path: release_notes.md
           draft: false
           prerelease: false
           make_latest: ${{ inputs.is_latest == 'true' }}
           files: |
-            ./zabbix-proxy-sbom-${{ inputs.zabbix_version }}.txt
+            ./zabbix-proxy-sbom-${{ steps.local_version.outputs.local_version }}.txt
             ./sbom-spdx.json
           fail_on_unmatched_files: true
         env:
