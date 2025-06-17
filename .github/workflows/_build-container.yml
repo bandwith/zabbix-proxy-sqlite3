@@ -182,6 +182,9 @@ jobs:
       # Security: Scan container for vulnerabilities
       - name: Run Trivy vulnerability scanner
         uses: aquasecurity/trivy-action@master
+        id: trivy_scan
+        if: success() && steps.local_version.outputs.local_version != ''
+        continue-on-error: true
         with:
           image-ref: ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ steps.local_version.outputs.local_version }}
           format: 'sarif'
@@ -191,13 +194,16 @@ jobs:
       # Security: Upload vulnerability scan results
       - name: Upload Trivy scan results to GitHub Security tab
         uses: github/codeql-action/upload-sarif@v3
-        if: always()
+        if: success() && steps.trivy_scan.outcome == 'success' && steps.trivy_scan.conclusion == 'success'
         with:
           sarif_file: 'trivy-results.sarif'
 
       # Generate SPDX SBOM and submit to GitHub dependency graph
       - name: Generate SPDX SBOM
         uses: aquasecurity/trivy-action@master
+        id: spdx_sbom
+        if: success() && steps.local_version.outputs.local_version != ''
+        continue-on-error: true
         with:
           image-ref: ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ steps.local_version.outputs.local_version }}
           format: 'spdx-json'
@@ -206,6 +212,7 @@ jobs:
       # Validate SPDX SBOM contents
       - name: Validate SPDX SBOM
         id: validate_spdx_sbom
+        if: success() && steps.spdx_sbom.outcome == 'success' && steps.spdx_sbom.conclusion == 'success'
         run: |
           echo "## SPDX SBOM Validation" >> $GITHUB_STEP_SUMMARY
 
@@ -233,6 +240,8 @@ jobs:
       # Generate SBOM and submit to GitHub dependency graph using Anchore SBOM Action
       - name: Generate SBOM and submit to GitHub dependency graph
         uses: anchore/sbom-action@v0
+        if: success() && steps.local_version.outputs.local_version != ''
+        continue-on-error: true
         with:
           image: ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ steps.local_version.outputs.local_version }}
           artifact-name: sbom-${{ steps.local_version.outputs.local_version }}.spdx.json
@@ -240,6 +249,7 @@ jobs:
 
       # Verify Docker Image Attestations
       - name: Verify Docker Image Attestations
+        if: success() && steps.local_version.outputs.local_version != ''
         run: |
           echo "## Docker Image Attestations" >> $GITHUB_STEP_SUMMARY
           echo "Verifying attestations for image: ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ steps.local_version.outputs.local_version }}" >> $GITHUB_STEP_SUMMARY
@@ -360,6 +370,7 @@ jobs:
           EOF
 
       - name: Extract SBOM from built image
+        if: success() && steps.local_version.outputs.local_version != ''
         run: |
           IMAGE_TAG=ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ steps.local_version.outputs.local_version }}
           CONTAINER_ID=$(docker create $IMAGE_TAG)
@@ -368,6 +379,7 @@ jobs:
 
       # Verify image metadata was properly applied
       - name: Verify OCI metadata
+        if: success() && steps.local_version.outputs.local_version != ''
         run: |
           echo "## OCI Metadata Validation" >> $GITHUB_STEP_SUMMARY
           IMAGE_TAG=ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ steps.local_version.outputs.local_version }}
