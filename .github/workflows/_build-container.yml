@@ -67,7 +67,7 @@ jobs:
       - name: Set up BuildKit cache
         uses: reproducible-containers/buildkit-cache-dance@v3.2.0
         with:
-          cache-map: '{"main": {"path": "${{ env.CACHE_PATH }}", "max-bytes": 10737418240}}'
+          cache-map: '{"main": {"target": "/var/cache/apt", "path": "${{ env.CACHE_PATH }}", "max-bytes": 10737418240}}'
           scratch-dir: /tmp/buildkit-cache-scratch
 
       # Security: Generate SBOM during build
