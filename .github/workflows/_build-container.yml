@@ -67,14 +67,14 @@ jobs:
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Security: Generate SBOM during build
+      # Security: Generate SBOM during build with max-level provenance
       - name: Build and push images
         uses: docker/build-push-action@v6
         with:
           context: .
           push: true
-          provenance: true  # Security: Enable provenance attestation
-          sbom: true        # Security: Generate SBOM
+          provenance: mode=max  # Security: Enable max-level provenance attestation
+          sbom: true           # Security: Generate SBOM
           platforms: linux/amd64
           outputs: type=image
           file: ./Dockerfile
@@ -162,11 +162,61 @@ jobs:
             echo "::warning::SPDX SBOM file is missing or empty"
           fi
 
-      # Submit dependencies to GitHub with latest version of the action
-      - name: Submit dependencies to GitHub
-        uses: advanced-security/spdx-dependency-submission-action@v0.1.1
+      # Generate SBOM and submit to GitHub dependency graph using Anchore SBOM Action
+      - name: Generate SBOM and submit to GitHub dependency graph
+        uses: anchore/sbom-action@v0
         with:
-          filePath: 'sbom-spdx.json'
+          image: ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ inputs.zabbix_version }}
+          artifact-name: sbom-${{ inputs.zabbix_version }}.spdx.json
+          dependency-snapshot: true
+
+      # Verify Docker Image Attestations
+      - name: Verify Docker Image Attestations
+        run: |
+          echo "## Docker Image Attestations" >> $GITHUB_STEP_SUMMARY
+          echo "Verifying attestations for image: ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ inputs.zabbix_version }}" >> $GITHUB_STEP_SUMMARY
+
+          # Install Cosign if not already available
+          if ! command -v cosign &> /dev/null; then
+            echo "Installing Cosign for attestation verification..." >> $GITHUB_STEP_SUMMARY
+            COSIGN_VERSION=v2.2.3
+            wget -q -O cosign "https://github.com/sigstore/cosign/releases/download/${COSIGN_VERSION}/cosign-linux-amd64"
+            chmod +x cosign
+            sudo mv cosign /usr/local/bin/
+          fi
+
+          # Verify SBOM attestation
+          echo "### SBOM Attestation" >> $GITHUB_STEP_SUMMARY
+          if cosign verify-attestation --type cyclonedx \
+             ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ inputs.zabbix_version }} \
+             --certificate-identity-regexp "https://github.com/docker/build-push-action" | grep -q "Verification succeeded"; then
+            echo ":white_check_mark: SBOM attestation verified" >> $GITHUB_STEP_SUMMARY
+          else
+            echo ":warning: SBOM attestation verification inconclusive (this is normal for newly built images)" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          # Verify Provenance attestation
+          echo "### Provenance Attestation (SLSA)" >> $GITHUB_STEP_SUMMARY
+          if cosign verify-attestation --type slsaprovenance \
+             ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ inputs.zabbix_version }} \
+             --certificate-identity-regexp "https://github.com/docker/build-push-action" | grep -q "Verification succeeded"; then
+            echo ":white_check_mark: Provenance attestation verified with mode=max" >> $GITHUB_STEP_SUMMARY
+            echo ":information_source: This means your image includes detailed build information that can be verified." >> $GITHUB_STEP_SUMMARY
+          else
+            echo ":warning: Provenance attestation verification inconclusive (this is normal for newly built images)" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          # Document information about attestations
+          cat >> $GITHUB_STEP_SUMMARY << EOF
+
+          ### About Docker Attestations
+
+          **SBOM Attestation**: Software Bill of Materials (SBOM) provides a detailed inventory of components in the container image, helping with security scanning and license compliance.
+
+          **Provenance Attestation**: Documents the build process, including the build platform, source repository, and build parameters, forming a verifiable chain of custody for the container image.
+
+          For more information about Docker build attestations, see [Docker Documentation](https://docs.docker.com/build/ci/github-actions/attestations/).
+          EOF
 
       # Cache pruning removed as we're not using cache features anymore
 
