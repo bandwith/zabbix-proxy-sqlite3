@@ -4,7 +4,7 @@ on:
   workflow_call:
     outputs:
       latest_version:
-        description: "Latest stable Zabbix version (newest published release regardless of Major.Minor)"
+        description: "Latest stable Zabbix version (highest version number, e.g., 7.2.7 > 7.0.13)"
         value: ${{ jobs.zabbix-version-detection.outputs.latest_version }}
       lts_version:
         description: "LTS Zabbix version (current LTS release from upstream Zabbix)"
@@ -75,9 +75,9 @@ jobs:
           fi
 
           # Get latest version (highest version number)
-          # Latest = newest published release regardless of Major.Minor
-          LATEST_VERSION=$(echo "$SUPPORTED_VERSIONS" | tail -n1)
-          echo "Latest version: $LATEST_VERSION (newest published release regardless of Major.Minor)"
+          # Latest = highest version number regardless of release date
+          LATEST_VERSION=$(echo "$SUPPORTED_VERSIONS" | sort -V | tail -n1)
+          echo "Latest version: $LATEST_VERSION (highest version number)"
           echo "LTS version: $LTS_VERSION (current LTS release from upstream Zabbix)"
           echo "All supported versions: $SUPPORTED_VERSIONS"
 
@@ -90,7 +90,7 @@ jobs:
           echo "## Zabbix Version Detection" >> $GITHUB_STEP_SUMMARY
           echo "| Type | Version | Description |" >> $GITHUB_STEP_SUMMARY
           echo "| ---- | ------- | ----------- |" >> $GITHUB_STEP_SUMMARY
-          echo "| Latest | $LATEST_VERSION | Newest published release regardless of Major.Minor |" >> $GITHUB_STEP_SUMMARY
+          echo "| Latest | $LATEST_VERSION | Highest version number (e.g., 7.2.7 > 7.0.13) |" >> $GITHUB_STEP_SUMMARY
           echo "| LTS | $LTS_VERSION | Current LTS release from upstream Zabbix |" >> $GITHUB_STEP_SUMMARY
           echo "| All Supported | $(echo "$SUPPORTED_VERSIONS" | tr '\n' ', ') | All versions tracked by upstream Zabbix |" >> $GITHUB_STEP_SUMMARY
 
@@ -105,10 +105,10 @@ jobs:
           echo "LTS version (current LTS release): $LTS_VERSION"
 
           # Use jq to properly create and escape the JSON - ensure all values are treated as strings
-          # Get the latest version (newest published release)
-          LATEST_VERSION=$(echo "$SUPPORTED_VERSIONS" | tail -n1)
+          # Get the latest version (highest version number)
+          LATEST_VERSION=$(echo "$SUPPORTED_VERSIONS" | sort -V | tail -n1)
 
-          # Create matrix with both LTS (current LTS release) and Latest (newest published release) flags
+          # Create matrix with both LTS (current LTS release) and Latest (highest version number) flags
           MATRIX_JSON=$(echo "$SUPPORTED_VERSIONS" | tr ' ' '\n' | grep -v '^$' | jq --arg lts "$LTS_VERSION" --arg latest "$LATEST_VERSION" -Rs '
             split("\n")
             | map(select(length > 0))
@@ -122,7 +122,7 @@ jobs:
           ' | tr -d '\n')
 
           # Output sanitized JSON and validate it
-          echo "Generated matrix with proper version tagging (LTS = current LTS release, Latest = newest published release):"
+          echo "Generated matrix with proper version tagging (LTS = current LTS release, Latest = highest version number):"
           echo "$MATRIX_JSON" | jq .
 
           # Validate JSON before setting output
@@ -152,7 +152,7 @@ jobs:
           echo "zabbix_version value type: $ZVERSION_TYPE (should be 'string')"
           echo "major_minor value type: $MAJORMINOR_TYPE (should be 'string')"
           echo "is_lts value type: $ISLTS_TYPE (should be 'string') - identifies current LTS release"
-          echo "is_latest value type: $ISLATEST_TYPE (should be 'string') - identifies newest published release"
+          echo "is_latest value type: $ISLATEST_TYPE (should be 'string') - identifies highest version number"
 
           if [[ "$ZVERSION_TYPE" != "string" || "$MAJORMINOR_TYPE" != "string" ||
                 "$ISLTS_TYPE" != "string" || "$ISLATEST_TYPE" != "string" ]]; then
@@ -160,7 +160,7 @@ jobs:
             echo "::error::zabbix_version=$ZVERSION_TYPE,"
             echo "::error::major_minor=$MAJORMINOR_TYPE,"
             echo "::error::is_lts (current LTS)=$ISLTS_TYPE,"
-            echo "::error::is_latest (newest published)=$ISLATEST_TYPE"
+            echo "::error::is_latest (highest version number)=$ISLATEST_TYPE"
             exit 1
           fi
 
@@ -168,8 +168,8 @@ jobs:
 
           # Add validation info to workflow summary
           echo "## Matrix Generation Summary" >> $GITHUB_STEP_SUMMARY
-          echo "| Version | Major.Minor | Is LTS (Current LTS) | Is Latest (Newest Published) |" >> $GITHUB_STEP_SUMMARY
-          echo "| ------- | ----------- | -------------------- | --------------------------- |" >> $GITHUB_STEP_SUMMARY
+          echo "| Version | Major.Minor | Is LTS (Current LTS) | Is Latest (Highest Version) |" >> $GITHUB_STEP_SUMMARY
+          echo "| ------- | ----------- | -------------------- | -------------------------- |" >> $GITHUB_STEP_SUMMARY
           for VERSION in $SUPPORTED_VERSIONS; do
             [[ -z "$VERSION" ]] && continue
             MAJOR_MINOR=$(echo "$VERSION" | cut -d. -f1,2)

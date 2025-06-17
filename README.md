@@ -85,17 +85,20 @@ volumes:
 
 | Version | Container Tags | Zabbix Version | Support Status |
 |---------|---------------|----------------|----------------|
-| **7.0.13** | `latest`, `7.0.13`, `7.0` | 7.0 LTS | ✅ **Long-Term Support** |
-| **7.2.7** | `7.2.7`, `7.2` | 7.2 Stable | ✅ Latest Features |
+| **7.0.13** | `lts`, `7.0.13`, `7.0` | 7.0 LTS | ✅ **Long-Term Support** |
+| **7.2.7** | `latest`, `7.2.7`, `7.2` | 7.2 Stable | ✅ Latest Features |
 
-> **📌 Note**: The `latest` tag points to the **LTS version (7.0.13)** for maximum stability in production environments. Check the [Zabbix release notes](https://www.zabbix.com/release_notes) for detailed version differences.
+> **📌 Note**: The `latest` tag points to the **highest version number (7.2.7)**, while the `lts` tag points to the **LTS version (7.0.13)** for maximum stability in production environments. Check the [Zabbix release notes](https://www.zabbix.com/release_notes) for detailed version differences.
 
 ### 🐳 Container Registries
 
 #### GitHub Container Registry (Recommended)
 ```bash
-# Pull the latest LTS version
+# Pull the latest version (highest version number)
 docker pull ghcr.io/bandwith/zabbix-proxy-sqlite3:latest
+
+# Pull the LTS version (most stable)
+docker pull ghcr.io/bandwith/zabbix-proxy-sqlite3:lts
 
 # Pull a specific version
 docker pull ghcr.io/bandwith/zabbix-proxy-sqlite3:7.0.13
@@ -168,8 +171,7 @@ docker pull ghcr.io/bandwith/zabbix-proxy-sqlite3:7.0.13
 - 🏷️ **Container tags** → Multiple tags per release (`latest`, `7.0`, `7.0.13`)
 
 **Release Management**:
-- 🧹 **Cleanup** → Keeps only latest 3 patch versions per major.minor
-- 🎯 **LTS marking** → Latest major.0 version marked as "latest"
+- 🎯 **LTS marking** → Latest major.0 version marked as "lts"
 - 📋 **Manual releases** → Workflow dispatch for custom versions
 - 🚀 **Automatic releases** when new Zabbix versions are detected
 

@@ -16,7 +16,7 @@ on:
       latest_version:
         required: true
         type: string
-        description: "The latest (bleeding edge) Zabbix version"
+        description: "The highest Zabbix version number (e.g., 7.2.7 > 7.0.13)"
     outputs:
       release_id:
         description: "Created GitHub Release ID"
@@ -298,7 +298,7 @@ jobs:
           - \\`$MAJOR_MINOR\\` - Latest patch for this major.minor
           $(if [ "$IS_LOCAL_CHANGE" = "false" ]; then echo "- \\`$BASE_VERSION\\` - Upstream Zabbix version"; fi)
           $(if [ "$IS_LATEST" = "true" ]; then echo "- \\`lts\\` - Long-Term Support version (most stable)"; fi)
-          $(if [ "$BASE_VERSION" = "${{ inputs.latest_version }}" ]; then echo "- \\`latest\\` - Latest bleeding edge version"; fi)
+          $(if [ "$BASE_VERSION" = "${{ inputs.latest_version }}" ]; then echo "- \\`latest\\` - Latest version with highest version number"; fi)
           EOF
 
       - name: Extract SBOM from built image
