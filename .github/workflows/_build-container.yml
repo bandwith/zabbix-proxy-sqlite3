@@ -12,6 +12,7 @@ on:
       is_latest:
         required: true
         type: string
+        description: "Whether this is the LTS version (as a string 'true' or 'false')"
       latest_version:
         required: true
         type: string
@@ -113,6 +114,47 @@ jobs:
         with:
           sarif_file: 'trivy-results.sarif'
 
+      # Generate SPDX SBOM and submit to GitHub dependency graph
+      - name: Generate SPDX SBOM
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ inputs.zabbix_version }}
+          format: 'spdx-json'
+          output: 'sbom-spdx.json'
+
+      # Validate SPDX SBOM contents
+      - name: Validate SPDX SBOM
+        id: validate_spdx_sbom
+        run: |
+          echo "## SPDX SBOM Validation" >> $GITHUB_STEP_SUMMARY
+
+          # Check if the file exists and has content
+          if [ -f "sbom-spdx.json" ] && [ -s "sbom-spdx.json" ]; then
+            echo ":white_check_mark: SPDX SBOM file exists and has content" >> $GITHUB_STEP_SUMMARY
+
+            # Count packages
+            PACKAGE_COUNT=$(jq '.packages | length' sbom-spdx.json)
+            echo ":information_source: Contains information on $PACKAGE_COUNT packages" >> $GITHUB_STEP_SUMMARY
+
+            # Check for critical tools
+            for TOOL in "zabbix" "sqlite" "python" "snmp"; do
+              if jq -e ".packages[] | select(.name | test(\"$TOOL\"; \"i\"))" sbom-spdx.json > /dev/null; then
+                echo ":white_check_mark: Found SBOM entries related to: $TOOL" >> $GITHUB_STEP_SUMMARY
+              else
+                echo ":warning: No SBOM entries found for key component: $TOOL" >> $GITHUB_STEP_SUMMARY
+              fi
+            done
+          else
+            echo ":x: SPDX SBOM file is missing or empty" >> $GITHUB_STEP_SUMMARY
+            echo "::warning::SPDX SBOM file is missing or empty"
+          fi
+
+      # Submit dependencies to GitHub with latest version of the action
+      - name: Submit dependencies to GitHub
+        uses: advanced-security/spdx-dependency-submission-action@v0.1.1
+        with:
+          filePath: 'sbom-spdx.json'
+
       - name: Prune build cache (weekly)
         if: github.event_name == 'schedule'
         run: |
@@ -138,7 +180,12 @@ jobs:
           - **Speed Testing**: Dual implementation (Cloudflare Speedtest & Ookla Speedtest CLI)
           - **Custom Scripts**: AV-specific monitoring utilities
 
-          ### 📥 Container Images
+          ### � Security Assets
+          - **SBOMs**: This release includes two Software Bill of Materials files:
+             - \`zabbix-proxy-sbom-$VERSION.txt\`: Custom detailed SBOM with tool versions
+             - \`sbom-spdx.json\`: Standard SPDX format for automated scanning
+
+          ### �📥 Container Images
           ```bash
           # Pull this specific version
           docker pull ghcr.io/${{ github.repository_owner }}/zabbix-proxy-sqlite3:$VERSION
@@ -206,7 +253,9 @@ jobs:
           draft: false
           prerelease: false
           make_latest: ${{ inputs.is_latest == 'true' }}
-          files: ./zabbix-proxy-sbom-${{ inputs.zabbix_version }}.txt
+          files: |
+            ./zabbix-proxy-sbom-${{ inputs.zabbix_version }}.txt
+            ./sbom-spdx.json
           fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

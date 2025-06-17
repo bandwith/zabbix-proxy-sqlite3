@@ -88,15 +88,14 @@ jobs:
         run: |
           REPO_OWNER="${{ github.repository_owner }}"
           REPO_NAME="${{ github.repository }}"
+          REPO_NAME="${REPO_NAME#*/}"
           echo "Repository owner: $REPO_OWNER"
           echo "Repository name: $REPO_NAME"
           if [[ -f "README.md" ]]; then
             echo "Updating GitHub organization references in README.md..."
-            sed -i "s|github\.com/[^/]*/zabbix-proxy-sqlite3/|github.com/$REPO_OWNER/$REPO_NAME/|g" README.md
-            sed -i "s|img\.shields\.io/github/v/release/[^/]*/zabbix-proxy-sqlite3|img.shields.io/github/v/release/$REPO_OWNER/$REPO_NAME|g" README.md
-            sed -i "s|img\.shields\.io/github/license/[^/]*/zabbix-proxy-sqlite3|img.shields.io/github/license/$REPO_OWNER/$REPO_NAME|g" README.md
-            sed -i "s|ghcr\.io/[^/]*/zabbix-proxy-sqlite3|ghcr.io/$REPO_OWNER/$REPO_NAME|g" README.md
-            sed -i "s|github\.com/[^/]*/zabbix-proxy-sqlite3|github.com/$REPO_OWNER/$REPO_NAME|g" README.md
+
+            # Single pass to fix all GitHub/GHCR URLs using Perl
+            perl -i -pe "s|(github\.com|ghcr\.io|img\.shields\.io/github/v/release|img\.shields\.io/github/license)/([^/]+)(/[^/]+)?/$REPO_NAME|\1/$REPO_OWNER/$REPO_NAME|g" README.md
             echo "Updated all GitHub organization references"
           else
             echo "Warning: README.md not found"

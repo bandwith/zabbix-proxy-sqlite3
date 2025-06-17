@@ -177,7 +177,10 @@ docker pull ghcr.io/bandwith/bandwith/zabbix-proxy-sqlite3:7.0.13
 - 🚫 **Non-root execution** (UID 1997)
 - 🔒 **Minimal attack surface** with cleaned dependencies
 - 🔍 **Regular security scans** via automated tools
-- 📋 **Health checks** for container monitoring
+- � **Software Bill of Materials (SBOM)** in multiple formats:
+  - Custom detailed SBOM with tool versions
+  - SPDX format submitted to GitHub dependency graph
+- �📋 **Health checks** for container monitoring
 
 ### 📋 System Requirements
 - **Memory**: Minimum 512MB RAM (1GB+ recommended for AV environments)

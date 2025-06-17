@@ -34,43 +34,129 @@ jobs:
       - name: Fetch and save official Zabbix versions
         id: fetch_versions
         run: |
-          curl -s "https://services.zabbix.com/updates/v1" > .github/zabbix-versions.json
+          # Fetch Zabbix version data
+          echo "Fetching data from Zabbix API..."
+          curl -s -f -S "https://services.zabbix.com/updates/v1" > .github/zabbix-versions.json || {
+            echo "::error::Failed to fetch Zabbix version data from API"
+            exit 1
+          }
+
+          # Validate the JSON response
           if ! jq . .github/zabbix-versions.json > /dev/null; then
-            echo "Error: Invalid JSON received from Zabbix API"
+            echo "::error::Invalid JSON received from Zabbix API"
+            cat .github/zabbix-versions.json | head -n 50
             exit 1
           fi
+
+          # Extract supported versions
           SUPPORTED_VERSIONS=$(jq -r '.versions[] | select(.end_of_full_support == false) | .latest_release.release' .github/zabbix-versions.json | sort -V)
+          if [ -z "$SUPPORTED_VERSIONS" ]; then
+            echo "::error::No supported versions found in Zabbix API response"
+            cat .github/zabbix-versions.json | jq .
+            exit 1
+          fi
+
+          # Identify LTS version (x.0.x format)
           LTS_VERSION=""
           for VERSION in $SUPPORTED_VERSIONS; do
             [[ -z "$VERSION" ]] && continue
             MINOR=$(echo "$VERSION" | cut -d. -f2)
             if [[ "$MINOR" == "0" ]]; then
               LTS_VERSION="$VERSION"
+              echo "Found LTS version: $LTS_VERSION (x.0.x pattern)"
             fi
           done
+
+          # Fallback if no LTS found
           if [[ -z "$LTS_VERSION" ]]; then
             LTS_VERSION=$(echo "$SUPPORTED_VERSIONS" | head -n1)
+            echo "No LTS version with x.0.x pattern found, using oldest version as LTS: $LTS_VERSION"
           fi
+
+          # Get latest version (highest version number)
           LATEST_VERSION=$(echo "$SUPPORTED_VERSIONS" | tail -n1)
+          echo "Latest version: $LATEST_VERSION"
+          echo "LTS version: $LTS_VERSION"
+          echo "All supported versions: $SUPPORTED_VERSIONS"
+
+          # Set outputs for next steps
           echo "latest_version=$LATEST_VERSION" >> "$GITHUB_OUTPUT"
           echo "lts_version=$LTS_VERSION" >> "$GITHUB_OUTPUT"
           echo "all_versions=$(echo "$SUPPORTED_VERSIONS" | tr '\n' ',')" >> "$GITHUB_OUTPUT"
+
+          # Add to step summary
+          echo "## Zabbix Version Detection" >> $GITHUB_STEP_SUMMARY
+          echo "| Type | Version |" >> $GITHUB_STEP_SUMMARY
+          echo "| ---- | ------- |" >> $GITHUB_STEP_SUMMARY
+          echo "| Latest | $LATEST_VERSION |" >> $GITHUB_STEP_SUMMARY
+          echo "| LTS | $LTS_VERSION |" >> $GITHUB_STEP_SUMMARY
+          echo "| All Supported | $(echo "$SUPPORTED_VERSIONS" | tr '\n' ', ') |" >> $GITHUB_STEP_SUMMARY
 
       - name: Generate matrix
         id: generate_matrix
         run: |
           SUPPORTED_VERSIONS=$(jq -r '.versions[] | select(.end_of_full_support == false) | .latest_release.release' .github/zabbix-versions.json | sort -V)
           LTS_VERSION="${{ steps.fetch_versions.outputs.lts_version }}"
-          MATRIX_JSON='{"include":['
-          FIRST=true
+
+          # Create the matrix JSON with proper string escaping
+          echo "Building matrix with these versions: $SUPPORTED_VERSIONS"
+          echo "LTS version: $LTS_VERSION"
+
+          # Use jq to properly create and escape the JSON - ensure all values are treated as strings
+          MATRIX_JSON=$(echo "$SUPPORTED_VERSIONS" | tr ' ' '\n' | grep -v '^$' | jq --arg lts "$LTS_VERSION" -Rs '
+            split("\n")
+            | map(select(length > 0))
+            | map({
+                "zabbix_version": .,
+                "major_minor": (split(".") | .[0:2] | join(".") | tostring),
+                "is_latest": (if . == $lts then "true" else "false" end)
+              })
+            | {"include": .}
+          ' | tr -d '\n')
+
+          # Output sanitized JSON and validate it
+          echo "Generated matrix:"
+          echo "$MATRIX_JSON" | jq .
+
+          # Validate JSON before setting output
+          if ! echo "$MATRIX_JSON" | jq . > /dev/null; then
+            echo "::error::Generated matrix is not valid JSON. Check the matrix generation logic."
+            exit 1
+          fi
+
+          # Additional validation: check that the JSON has the expected structure
+          INCLUDE_COUNT=$(echo "$MATRIX_JSON" | jq '.include | length')
+          if [[ "$INCLUDE_COUNT" -lt 1 ]]; then
+            echo "::error::Matrix JSON is invalid: No items in 'include' array"
+            echo "$MATRIX_JSON" | jq .
+            exit 1
+          fi
+
+          # Validate first matrix item to ensure values are strings
+          FIRST_ITEM=$(echo "$MATRIX_JSON" | jq -r '.include[0]')
+          echo "First matrix item (for validation): $FIRST_ITEM"
+
+          ZVERSION_TYPE=$(echo "$MATRIX_JSON" | jq -r '.include[0].zabbix_version | type')
+          MAJORMINOR_TYPE=$(echo "$MATRIX_JSON" | jq -r '.include[0].major_minor | type')
+
+          echo "zabbix_version value type: $ZVERSION_TYPE (should be 'string')"
+          echo "major_minor value type: $MAJORMINOR_TYPE (should be 'string')"
+
+          if [[ "$ZVERSION_TYPE" != "string" || "$MAJORMINOR_TYPE" != "string" ]]; then
+            echo "::error::Matrix values must be strings, not numbers. Got types: zabbix_version=$ZVERSION_TYPE, major_minor=$MAJORMINOR_TYPE"
+            exit 1
+          fi
+
+          echo "matrix=$MATRIX_JSON" >> "$GITHUB_OUTPUT"
+
+          # Add validation info to workflow summary
+          echo "## Matrix Generation Summary" >> $GITHUB_STEP_SUMMARY
+          echo "| Version | Major.Minor | Is LTS |" >> $GITHUB_STEP_SUMMARY
+          echo "| ------- | ----------- | ------ |" >> $GITHUB_STEP_SUMMARY
           for VERSION in $SUPPORTED_VERSIONS; do
             [[ -z "$VERSION" ]] && continue
-            if [[ "$FIRST" != true ]]; then MATRIX_JSON+=','; fi
-            FIRST=false
             MAJOR_MINOR=$(echo "$VERSION" | cut -d. -f1,2)
-            IS_LATEST="false"
-            if [[ "$VERSION" == "$LTS_VERSION" ]]; then IS_LATEST="true"; fi
-            MATRIX_JSON+="{\"zabbix_version\":\"$VERSION\",\"major_minor\":\"$MAJOR_MINOR\",\"is_latest\":$IS_LATEST}"
+            IS_LATEST="No"
+            if [[ "$VERSION" == "$LTS_VERSION" ]]; then IS_LATEST="Yes"; fi
+            echo "| $VERSION | $MAJOR_MINOR | $IS_LATEST |" >> $GITHUB_STEP_SUMMARY
           done
-          MATRIX_JSON+=']}'
-          echo "matrix=$MATRIX_JSON" >> "$GITHUB_OUTPUT"

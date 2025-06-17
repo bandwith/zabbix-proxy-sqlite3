@@ -60,8 +60,67 @@ jobs:
     outputs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
     steps:
+      - name: Print diagnostic info
+        run: |
+          echo "## Diagnostic Info"
+          echo "Latest version: ${{ needs.detect-versions.outputs.latest_version }}"
+          echo "LTS version: ${{ needs.detect-versions.outputs.lts_version }}"
+          echo "All versions: ${{ needs.detect-versions.outputs.all_versions }}"
       - id: set-matrix
-        run: echo "matrix=${{ needs.detect-versions.outputs.matrix }}" >> $GITHUB_OUTPUT
+        run: |
+          # Get raw matrix from previous job
+          RAW_MATRIX='${{ needs.detect-versions.outputs.matrix }}'
+
+          # Debug output
+          echo "Received matrix from detect-versions job:"
+          echo "$RAW_MATRIX"
+
+          # Enhanced diagnostic info
+          echo "Matrix content type check:"
+          echo "$RAW_MATRIX" | file -
+
+          # Check if it's a valid JSON using jq
+          if ! echo "$RAW_MATRIX" | jq . >/dev/null 2>&1; then
+            # Detailed error report
+            ERROR_MSG=$(echo "$RAW_MATRIX" | jq . 2>&1)
+
+            echo "::error::Matrix from version detection is not valid JSON"
+            echo "::error::JQ error: $ERROR_MSG"
+            echo "::error::Raw matrix content: $RAW_MATRIX"
+
+            # Try a character-by-character hex dump to find invalid characters
+            echo "Matrix content hex dump (first 200 chars):"
+            echo "$RAW_MATRIX" | head -c 200 | hexdump -C
+
+            # Fail the job - no fallbacks, just error out as requested
+            exit 1
+          fi
+
+          # Validate that all version values are strings
+          VERSION_TYPE=$(echo "$RAW_MATRIX" | jq -r '.include[0].zabbix_version | type' 2>/dev/null || echo "unknown")
+          if [[ "$VERSION_TYPE" != "string" ]]; then
+            echo "::error::Version in matrix must be a string, got type: $VERSION_TYPE"
+            echo "::error::Matrix content: $(echo "$RAW_MATRIX" | jq .)"
+            exit 1
+          fi
+
+          # Matrix is valid
+          echo "Matrix JSON is valid"
+          MATRIX="$RAW_MATRIX"
+
+          # Store and output the valid JSON
+          echo "$MATRIX" > /tmp/matrix.json
+          echo "Matrix to be used:"
+          jq . /tmp/matrix.json
+
+          # Output final matrix for the next job
+          echo "matrix=$MATRIX" >> $GITHUB_OUTPUT
+
+          # Add to step summary for debugging
+          echo "## Matrix Configuration" >> $GITHUB_STEP_SUMMARY
+          echo '```json' >> $GITHUB_STEP_SUMMARY
+          jq . /tmp/matrix.json >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
 
   # Run build for each matrix item
   build-containers:

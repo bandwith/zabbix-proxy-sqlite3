@@ -23,7 +23,7 @@ The CI process has been refactored into modular, reusable workflows with a leadi
 - **_version-detection.yml**: Detects supported Zabbix versions and generates the build matrix
 - **_check-changes.yml**: Determines if containers need rebuilding based on changes or schedule
 - **_update-docs.yml**: Updates documentation with available Zabbix versions
-- **_build-container.yml**: Builds, scans, and publishes Docker images for specific versions
+- **_build-container.yml**: Builds, scans, and publishes Docker images for specific versions, generates SBOMs, and submits dependency data to GitHub
 - **_cleanup.yml**: Handles cleanup of failed releases and tags
 
 ### Workflow Architecture
@@ -41,3 +41,22 @@ ci-release.yml (orchestrator)
 ## Supporting Workflows
 
 - **pre-commit.yml**: Runs code quality checks using pre-commit hooks
+
+## Security and Compliance Features
+
+### Software Bill of Materials (SBOM)
+
+The build workflow includes comprehensive SBOM generation and reporting:
+
+1. **Custom SBOM**: Generated during container build, containing versions of all critical components
+   - Located in `/usr/local/share/zabbix-proxy-sbom.txt` within the container
+   - Extracted and attached to GitHub releases
+
+2. **SPDX SBOM**: Generated with Trivy in SPDX format
+   - Submitted to GitHub's dependency graph via the `advanced-security/spdx-dependency-submission-action`
+   - Provides automated vulnerability scanning through GitHub Dependabot
+   - Attached to GitHub releases as `sbom-spdx.json`
+
+3. **Validation**: Both SBOM formats are validated before release
+   - Custom SBOM: Checks for required tools and components
+   - SPDX SBOM: Validates structure and content
