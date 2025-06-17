@@ -41,7 +41,9 @@
       "matchPackageNames": [
         "zabbix/zabbix-proxy-sqlite3"
       ],
-      "datasources": ["zabbix-api"],
+      "matchDatasources": [
+        "zabbix-api"
+      ],
       "versioning": "regex:^ubuntu-(?<major>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)$",
       "commitMessageTopic": "Zabbix Proxy version",
       "groupName": "zabbix"
@@ -51,7 +53,9 @@
         "speedtest-cli"
       ],
       "commitMessageTopic": "Ookla Speedtest CLI",
-      "datasources": ["speedtest-cli"],
+      "matchDatasources": [
+        "speedtest-cli"
+      ],
       "versioning": "semver"
     },
     {
@@ -59,7 +63,9 @@
         "cloudflarepycli"
       ],
       "commitMessageTopic": "Cloudflare Speedtest CLI",
-      "datasources": ["pypi"],
+      "matchDatasources": [
+        "pypi"
+      ],
       "versioning": "pep440"
     },
     {
