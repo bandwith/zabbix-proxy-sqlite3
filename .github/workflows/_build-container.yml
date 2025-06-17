@@ -39,8 +39,6 @@ jobs:
       release_tag: ${{ inputs.zabbix_version }}
     env:
       IMAGE_NAME: zabbix-proxy-sqlite3
-      BUILDCACHE_TAG: buildcache
-      CACHE_PATH: /tmp/buildkit-cache
     steps:
       - uses: actions/checkout@v4
 
@@ -50,6 +48,11 @@ jobs:
           echo "Verifying repository state..."
           git fsck --no-progress --no-dangling
           echo "Repository integrity check passed"
+          
+      # Generate reproducible build timestamp in ISO-8601 format
+      - name: Generate build timestamp
+        id: build_timestamp
+        run: echo "DATE=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> $GITHUB_OUTPUT
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -64,12 +67,6 @@ jobs:
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Set up BuildKit cache
-        uses: reproducible-containers/buildkit-cache-dance@v3.2.0
-        with:
-          cache-map: '{"main": {"target": "/var/cache/apt", "path": "${{ env.CACHE_PATH }}", "max-bytes": 10737418240}}'
-          scratch-dir: /tmp/buildkit-cache-scratch
-
       # Security: Generate SBOM during build
       - name: Build and push images
         uses: docker/build-push-action@v6
@@ -77,13 +74,12 @@ jobs:
           context: .
           push: true
           provenance: true  # Security: Enable provenance attestation
-          sbom: true       # Security: Generate SBOM
-          cache-from: |
-            type=gha,scope=buildkit-${{ inputs.zabbix_version }}
-            type=registry,ref=ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ env.BUILDCACHE_TAG }}
-          cache-to: |
-            type=gha,scope=buildkit-${{ inputs.zabbix_version }},mode=max
-            type=registry,ref=ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ env.BUILDCACHE_TAG }},mode=max
+          sbom: true        # Security: Generate SBOM
+          platforms: linux/amd64
+          outputs: type=image
+          file: ./Dockerfile
+          secrets: |
+            "github_token=${{ secrets.GITHUB_TOKEN }}"
           build-args: |
             ZABBIX_VERSION=ubuntu-${{ inputs.zabbix_version }}
           tags: |
@@ -94,6 +90,7 @@ jobs:
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.created=${{ steps.build_timestamp.outputs.DATE }}
             org.opencontainers.image.description=Zabbix Proxy SQLite3 for AV Systems
             org.opencontainers.image.licenses=AGPL-3.0
             org.zabbix.upstream.version=${{ inputs.zabbix_version }}
@@ -155,11 +152,7 @@ jobs:
         with:
           filePath: 'sbom-spdx.json'
 
-      - name: Prune build cache (weekly)
-        if: github.event_name == 'schedule'
-        run: |
-          echo "Pruning build cache to prevent excessive growth..."
-          docker buildx prune --all --force
+      # Cache pruning removed as we're not using cache features anymore
 
       - name: Generate release notes
         id: release_notes
@@ -172,6 +165,7 @@ jobs:
 
           ### 📦 Base Version
           - **Zabbix Upstream**: $VERSION
+          - **Build Date**: $(date -u +'%Y-%m-%d %H:%M UTC')
 
           ### 🛠️ Container Features
           - **Network Monitoring**: ping, traceroute, mtr, fping, nmap, netcat
