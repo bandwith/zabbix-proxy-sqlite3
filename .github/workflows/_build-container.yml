@@ -140,44 +140,44 @@ jobs:
             "github_token=${{ secrets.GITHUB_TOKEN }}"
           build-args: |
             ZABBIX_VERSION=ubuntu-${{ inputs.zabbix_version }}
+            BUILD_DATE=${{ steps.build_timestamp.outputs.DATE }}
+            VCS_REF=${{ github.sha }}
+          # Tags based on version information and status
+          # - Local version (which may include .N suffix for local changes)
+          # - Major.minor version
+          # - Original Zabbix version (if not a local change)
+          # - LTS tag if applicable
+          # - Latest tag if applicable
           tags: |
-            # Always tag with the local version (which may include .N suffix for local changes)
             ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ steps.local_version.outputs.local_version }}
-
-            # Always tag with major.minor
             ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ inputs.major_minor }}
-
-            # Only tag with original Zabbix version if this is not a local change
             ${{ steps.local_version.outputs.is_local_change == 'false' && format('ghcr.io/{0}/{1}:{2}', github.repository_owner, env.IMAGE_NAME, inputs.zabbix_version) || '' }}
-
-            # LTS tag if applicable
             ${{ inputs.is_latest == 'true' && format('ghcr.io/{0}/{1}:lts', github.repository_owner, env.IMAGE_NAME) || '' }}
-
-            # Latest tag if applicable
             ${{ inputs.zabbix_version == inputs.latest_version && format('ghcr.io/{0}/{1}:latest', github.repository_owner, env.IMAGE_NAME) || '' }}
+          # Image metadata labels
+          # - Basic metadata
+          # - Source control information
+          # - Build reproducibility metadata
+          # - Legal information
+          # - Custom Zabbix metadata
           labels: |
-            # Basic metadata
             org.opencontainers.image.title=Zabbix Proxy SQLite3 for AV Systems
             org.opencontainers.image.description=Zabbix Proxy SQLite3 for AV Systems
             org.opencontainers.image.version=${{ inputs.zabbix_version }}
-
-            # Source control information
-            org.opencontainers.image.base.name="zabbix/zabbix-proxy-sqlite3"
+            org.opencontainers.image.base.name=zabbix/zabbix-proxy-sqlite3
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.url=${{ github.server_url }}/${{ github.repository }}
-
-            # Build reproducibility metadata
             org.opencontainers.image.created=${{ steps.build_timestamp.outputs.DATE }}
             org.opencontainers.image.authors=${{ github.repository_owner }}
             org.opencontainers.image.vendor=${{ github.repository_owner }}
-
-            # Legal information
             org.opencontainers.image.licenses=AGPL-3.0
             org.opencontainers.image.documentation=${{ github.server_url }}/${{ github.repository }}/blob/main/README.md
-
-            # Custom metadata
             org.zabbix.upstream.version=${{ inputs.zabbix_version }}
+            org.zabbix.local.version=${{ steps.local_version.outputs.local_version }}
+            org.zabbix.build.date=${{ steps.build_timestamp.outputs.DATE }}
+            org.zabbix.vcs.ref=${{ github.sha }}
+            org.zabbix.container.immutable=true
 
       # Security: Scan container for vulnerabilities
       - name: Run Trivy vulnerability scanner
@@ -286,7 +286,6 @@ jobs:
           For more information about Docker build attestations, see [Docker Documentation](https://docs.docker.com/build/ci/github-actions/attestations/).
           EOF
 
-      # Cache pruning removed as we're not using cache features anymore
 
       - name: Generate release notes
         id: release_notes
@@ -316,7 +315,15 @@ jobs:
           # Continue with the rest of the release notes
           cat >> release_notes.md <<EOF
 
-          ### 🛠️ Container Features
+          ### � Immutable Container
+          This container follows immutable container principles:
+          - Built with a specific, pinned Zabbix version
+          - All tools and dependencies are version-locked
+          - Configuration is provided at runtime through environment variables
+          - Data persistence requires external volumes
+          - Container itself is never modified after creation
+
+          ### �🛠️ Container Features
           - **Network Monitoring**: ping, traceroute, mtr, fping, nmap, netcat
           - **SNMP Support**: Full SNMP toolkit with MIB support
           - **Kubernetes**: kubectl for container orchestration monitoring
