@@ -67,12 +67,63 @@ jobs:
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Use the dedicated local version workflow to determine if there are local changes
-      - name: Determine local version with patch increment if needed
+      # Determine local version based on changes in the repository
+      - name: Get local version with patch increment if needed
         id: local_version
-        uses: ./.github/workflows/_local-version.yml
-        with:
-          zabbix_version: ${{ inputs.zabbix_version }}
+        run: |
+          ZABBIX_VERSION="${{ inputs.zabbix_version }}"
+
+          # Initialize values - use base version until determined otherwise
+          LOCAL_VERSION="$ZABBIX_VERSION"
+          IS_LOCAL_CHANGE=false
+
+          # Check if there are existing tags for this version
+          git fetch --tags
+          EXISTING_TAGS=$(git tag -l "$ZABBIX_VERSION*" | sort -V)
+          echo "Found existing tags: $EXISTING_TAGS"
+
+          # Check for local modifications since the last tag
+          LAST_TAG=$(echo "$EXISTING_TAGS" | tail -n 1)
+          if [[ -n "$LAST_TAG" ]]; then
+            echo "Last tag for this version: $LAST_TAG"
+
+            # Check if Dockerfile or scripts have changed
+            CHANGED_FILES=$(git diff --name-only $LAST_TAG HEAD -- Dockerfile scripts)
+            if [[ -n "$CHANGED_FILES" ]]; then
+              echo "Local changes detected since last build:"
+              echo "$CHANGED_FILES"
+
+              # Get the highest N value from existing X.Y.Z.N tags
+              HIGHEST_N=0
+              for TAG in $EXISTING_TAGS; do
+                if [[ $TAG =~ ^${ZABBIX_VERSION}\.[0-9]+$ ]]; then
+                  N_VALUE=$(echo "$TAG" | cut -d. -f4)
+                  if [[ $N_VALUE -gt $HIGHEST_N ]]; then
+                    HIGHEST_N=$N_VALUE
+                  fi
+                fi
+              done
+
+              # Increment N for the new local version
+              NEW_N=$(($HIGHEST_N + 1))
+              LOCAL_VERSION="$ZABBIX_VERSION.$NEW_N"
+              IS_LOCAL_CHANGE=true
+
+              echo "Using local version: $LOCAL_VERSION due to detected changes"
+            fi
+          fi
+
+          # Set outputs
+          echo "local_version=$LOCAL_VERSION" >> $GITHUB_OUTPUT
+          echo "is_local_change=$IS_LOCAL_CHANGE" >> $GITHUB_OUTPUT
+
+          # Add to step summary
+          echo "## Version Information" >> $GITHUB_STEP_SUMMARY
+          echo "| Description | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "| ----------- | ----- |" >> $GITHUB_STEP_SUMMARY
+          echo "| Upstream Zabbix Version | $ZABBIX_VERSION |" >> $GITHUB_STEP_SUMMARY
+          echo "| Local Version | $LOCAL_VERSION |" >> $GITHUB_STEP_SUMMARY
+          echo "| Local Changes | $IS_LOCAL_CHANGE |" >> $GITHUB_STEP_SUMMARY
 
       # Security: Generate SBOM during build with max-level provenance
       - name: Build and push images
