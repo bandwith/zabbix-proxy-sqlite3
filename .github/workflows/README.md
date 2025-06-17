@@ -18,24 +18,24 @@ This is the primary workflow for this repository. It handles:
 
 ## Reusable Workflows
 
-The CI process has been refactored into modular, reusable workflows in the `reusable/` directory:
+The CI process has been refactored into modular, reusable workflows with a leading underscore (`_`) to differentiate them from main workflows:
 
-- **version-detection.yml**: Detects supported Zabbix versions and generates the build matrix
-- **check-changes.yml**: Determines if containers need rebuilding based on changes or schedule
-- **update-docs.yml**: Updates documentation with available Zabbix versions
-- **build-container.yml**: Builds, scans, and publishes Docker images for specific versions
-- **cleanup.yml**: Handles cleanup of failed releases and tags
+- **_version-detection.yml**: Detects supported Zabbix versions and generates the build matrix
+- **_check-changes.yml**: Determines if containers need rebuilding based on changes or schedule
+- **_update-docs.yml**: Updates documentation with available Zabbix versions
+- **_build-container.yml**: Builds, scans, and publishes Docker images for specific versions
+- **_cleanup.yml**: Handles cleanup of failed releases and tags
 
 ### Workflow Architecture
 
 ```
 ci-release.yml (orchestrator)
   ↓
-  ├─ version-detection.yml
-  ├─ check-changes.yml
-  ├─ update-docs.yml
-  └─ build-container.yml (matrix strategy)
-      └─ cleanup.yml (on failure)
+  ├─ _version-detection.yml
+  ├─ _check-changes.yml
+  ├─ _update-docs.yml
+  └─ _build-container.yml (matrix strategy)
+      └─ _cleanup.yml (on failure)
 ```
 
 ## Supporting Workflows

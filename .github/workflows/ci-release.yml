@@ -37,16 +37,16 @@ env:
 jobs:
   # First, detect Zabbix versions
   detect-versions:
-    uses: ./.github/workflows/reusable/version-detection.yml
+    uses: ./.github/workflows/_version-detection.yml
 
   # Check if we need to rebuild containers
   check-changes:
-    uses: ./.github/workflows/reusable/check-changes.yml
+    uses: ./.github/workflows/_check-changes.yml
 
   # Update documentation
   update-docs:
     needs: detect-versions
-    uses: ./.github/workflows/reusable/update-docs.yml
+    uses: ./.github/workflows/_update-docs.yml
     with:
       latest_version: ${{ needs.detect-versions.outputs.latest_version }}
       lts_version: ${{ needs.detect-versions.outputs.lts_version }}
@@ -69,7 +69,7 @@ jobs:
     strategy:
       matrix: ${{ fromJson(needs.matrix-setup.outputs.matrix) }}
       fail-fast: false
-    uses: ./.github/workflows/reusable/build-container.yml
+    uses: ./.github/workflows/_build-container.yml
     with:
       zabbix_version: ${{ matrix.zabbix_version }}
       major_minor: ${{ matrix.major_minor }}
