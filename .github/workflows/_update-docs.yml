@@ -93,9 +93,8 @@ jobs:
           echo "Repository name: $REPO_NAME"
           if [[ -f "README.md" ]]; then
             echo "Updating GitHub organization references in README.md..."
-
-            # Single pass to fix all GitHub/GHCR URLs using Perl
-            perl -i -pe "s|(github\.com|ghcr\.io|img\.shields\.io/github/v/release|img\.shields\.io/github/license)/([^/]+)(/[^/]+)?/$REPO_NAME|\1/$REPO_OWNER/$REPO_NAME|g" README.md
+            # Single sed command with multi-pattern search - handles all domain types at once
+            sed -i -E 's@(github\.com|ghcr\.io|img\.shields\.io/github[^/]*/)[^/]+/('$REPO_NAME')@\1'$REPO_OWNER'/\2@g' README.md
             echo "Updated all GitHub organization references"
           else
             echo "Warning: README.md not found"
