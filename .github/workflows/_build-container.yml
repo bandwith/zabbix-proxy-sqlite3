@@ -48,7 +48,7 @@ jobs:
           echo "Verifying repository state..."
           git fsck --no-progress --no-dangling
           echo "Repository integrity check passed"
-          
+
       # Generate reproducible build timestamp in ISO-8601 format
       - name: Generate build timestamp
         id: build_timestamp
@@ -88,11 +88,27 @@ jobs:
             ${{ inputs.is_latest == 'true' && format('ghcr.io/{0}/{1}:lts', github.repository_owner, env.IMAGE_NAME) || '' }}
             ${{ inputs.zabbix_version == inputs.latest_version && format('ghcr.io/{0}/{1}:latest', github.repository_owner, env.IMAGE_NAME) || '' }}
           labels: |
+            # Basic metadata
+            org.opencontainers.image.title=Zabbix Proxy SQLite3 for AV Systems
+            org.opencontainers.image.description=Zabbix Proxy SQLite3 for AV Systems
+            org.opencontainers.image.version=${{ inputs.zabbix_version }}
+
+            # Source control information
+            org.opencontainers.image.base.name="zabbix/zabbix-proxy-sqlite3"
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.url=${{ github.server_url }}/${{ github.repository }}
+
+            # Build reproducibility metadata
             org.opencontainers.image.created=${{ steps.build_timestamp.outputs.DATE }}
-            org.opencontainers.image.description=Zabbix Proxy SQLite3 for AV Systems
+            org.opencontainers.image.authors=${{ github.repository_owner }}
+            org.opencontainers.image.vendor=${{ github.repository_owner }}
+
+            # Legal information
             org.opencontainers.image.licenses=AGPL-3.0
+            org.opencontainers.image.documentation=${{ github.server_url }}/${{ github.repository }}/blob/main/README.md
+
+            # Custom metadata
             org.zabbix.upstream.version=${{ inputs.zabbix_version }}
 
       # Security: Scan container for vulnerabilities
@@ -185,6 +201,16 @@ jobs:
           docker pull ghcr.io/${{ github.repository_owner }}/zabbix-proxy-sqlite3:$VERSION
           ```
 
+          ### 📋 Container Metadata
+          This image includes comprehensive OCI metadata for reproducible builds:
+          - **Title**: Zabbix Proxy SQLite3 for AV Systems
+          - **Version**: $VERSION
+          - **Created**: $(date -u +'%Y-%m-%d %H:%M UTC')
+          - **Source**: ${{ github.server_url }}/${{ github.repository }}
+          - **Revision**: Full git commit SHA
+          - **Documentation**: README.md in repository
+          - **License**: AGPL-3.0
+
           ### 🏷️ Available Tags
           - \\`$VERSION\\` - This specific version
           - \\`$MAJOR_MINOR\\` - Latest patch for this major.minor
@@ -198,6 +224,40 @@ jobs:
           CONTAINER_ID=$(docker create $IMAGE_TAG)
           docker cp $CONTAINER_ID:/usr/local/share/zabbix-proxy-sbom.txt ./zabbix-proxy-sbom-${{ inputs.zabbix_version }}.txt
           docker rm $CONTAINER_ID
+
+      # Verify image metadata was properly applied
+      - name: Verify OCI metadata
+        run: |
+          echo "## OCI Metadata Validation" >> $GITHUB_STEP_SUMMARY
+          IMAGE_TAG=ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ inputs.zabbix_version }}
+
+          echo "Inspecting image metadata for $IMAGE_TAG..." >> $GITHUB_STEP_SUMMARY
+          # Use docker inspect to get the labels
+          docker inspect $IMAGE_TAG --format='{{ json .Config.Labels }}' | jq . > image_labels.json
+
+          # Check for required OCI labels
+          REQUIRED_LABELS=(
+            "org.opencontainers.image.title"
+            "org.opencontainers.image.description"
+            "org.opencontainers.image.version"
+            "org.opencontainers.image.source"
+            "org.opencontainers.image.revision"
+            "org.opencontainers.image.created"
+            "org.opencontainers.image.licenses"
+            "org.opencontainers.image.url"
+            "org.zabbix.upstream.version"
+          )
+
+          echo "### OCI Label Verification" >> $GITHUB_STEP_SUMMARY
+          for LABEL in "${REQUIRED_LABELS[@]}"; do
+            if grep -q "\"$LABEL\":" image_labels.json; then
+              VALUE=$(jq -r ".[\"$LABEL\"]" image_labels.json)
+              echo ":white_check_mark: $LABEL: $VALUE" >> $GITHUB_STEP_SUMMARY
+            else
+              echo ":x: Required label missing: $LABEL" >> $GITHUB_STEP_SUMMARY
+              echo "::warning::Required OCI label missing: $LABEL"
+            fi
+          done
 
       - name: Validate SBOM contents
         id: validate_sbom

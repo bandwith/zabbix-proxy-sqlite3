@@ -147,7 +147,11 @@ RUN echo "# SNMP configuration for custom MIBs" > /etc/snmp/snmp.conf && \
 
 # Configure more secure apt sources with priority on security updates
 WORKDIR /
-RUN echo "deb http://archive.ubuntu.com/ubuntu noble main restricted universe multiverse" > /etc/apt/sources.list && \
+# Check if ubuntu.sources exists and remove it to avoid duplication
+RUN if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then \
+      rm -f /etc/apt/sources.list.d/ubuntu.sources; \
+    fi && \
+    echo "deb http://archive.ubuntu.com/ubuntu noble main restricted universe multiverse" > /etc/apt/sources.list && \
     echo "deb http://archive.ubuntu.com/ubuntu noble-updates main restricted universe multiverse" >> /etc/apt/sources.list && \
     echo "deb http://archive.ubuntu.com/ubuntu noble-backports main restricted universe multiverse" >> /etc/apt/sources.list && \
     echo "# Priority on security updates" >> /etc/apt/sources.list && \
@@ -157,7 +161,12 @@ RUN echo "deb http://archive.ubuntu.com/ubuntu noble main restricted universe mu
 RUN mkdir -p /etc/apt/preferences.d && \
     echo "Package: *" > /etc/apt/preferences.d/99-security-updates && \
     echo "Pin: release l=Ubuntu,o=Ubuntu,a=noble-security" >> /etc/apt/preferences.d/99-security-updates && \
-    echo "Pin-Priority: 990" >> /etc/apt/preferences.d/99-security-updates
+    echo "Pin-Priority: 990" >> /etc/apt/preferences.d/99-security-updates && \
+    # Clean up apt lists to prevent duplicates
+    rm -rf /var/lib/apt/lists/* && \
+    # Disable apt translation files to reduce update size
+    mkdir -p /etc/apt/apt.conf.d && \
+    echo 'Acquire::Languages "none";' > /etc/apt/apt.conf.d/99-no-translations
 
 # Update and upgrade with security fixes
 # hadolint ignore=SC2015,DL3008
@@ -193,11 +202,13 @@ RUN chmod -R 755 /usr/local/bin/* && \
     # Remove unnecessary setuid/setgid permissions
     find / -perm /6000 -type f -exec chmod a-s {} \; || true
 
-# Add container labels
-LABEL org.opencontainers.image.vendor="Zabbix" \
-      org.opencontainers.image.title="Zabbix Proxy (SQLite3)" \
-      org.opencontainers.image.description="Zabbix Proxy with SQLite3 database" \
-      org.opencontainers.image.licenses="GPL v2.0"
+# Add container labels following OCI standards
+# Note: Some dynamic labels like created date and revision are added by the workflow
+LABEL org.opencontainers.image.title="Zabbix Proxy SQLite3 for AV Systems" \
+      org.opencontainers.image.description="Zabbix Proxy with SQLite3 database for AV Systems" \
+      org.opencontainers.image.licenses="AGPL-3.0" \
+      org.opencontainers.image.vendor="Zabbix" \
+      org.opencontainers.image.base.name="zabbix/zabbix-proxy-sqlite3"
 
 # Switch back to Zabbix user (UID 1997)
 USER 1997
@@ -229,6 +240,7 @@ USER 1997
 # Log versions of included tools for SBOM and traceability
 # hadolint ignore=DL3047,DL4001
 RUN echo "# SBOM: Included Tool Versions" > /usr/local/share/zabbix-proxy-sbom.txt && \
+    echo "# Generated: $(date -u +'%Y-%m-%d %H:%M:%S UTC')" >> /usr/local/share/zabbix-proxy-sbom.txt && \
     echo "" >> /usr/local/share/zabbix-proxy-sbom.txt && \
     echo "# Core Monitoring Tools" >> /usr/local/share/zabbix-proxy-sbom.txt && \
     echo "zabbix-proxy-sqlite3: $(zabbix_proxy -V 2>&1 | head -1)" >> /usr/local/share/zabbix-proxy-sbom.txt && \
