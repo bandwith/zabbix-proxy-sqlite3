@@ -261,8 +261,7 @@ jobs:
       - name: Set up BuildKit cache
         uses: reproducible-containers/buildkit-cache-dance@v3.2.0
         with:
-          cache-source: ${{ env.CACHE_PATH }}
-          cache-target: ${{ env.CACHE_PATH }}
+          cache-map: ${{ env.CACHE_PATH }}
           scratch-dir: /tmp/buildkit-cache-scratch
 
       # Security: Generate SBOM during build
