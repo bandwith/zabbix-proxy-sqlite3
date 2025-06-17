@@ -1,0 +1,212 @@
+name: Build and Publish Container
+
+on:
+  workflow_call:
+    inputs:
+      zabbix_version:
+        required: true
+        type: string
+      major_minor:
+        required: true
+        type: string
+      is_latest:
+        required: true
+        type: string
+      latest_version:
+        required: true
+        type: string
+        description: "The latest (bleeding edge) Zabbix version"
+    outputs:
+      release_id:
+        description: "Created GitHub Release ID"
+        value: ${{ jobs.build-container.outputs.release_id }}
+      release_tag:
+        description: "Created GitHub Release Tag"
+        value: ${{ jobs.build-container.outputs.release_tag }}
+
+jobs:
+  build-container:
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+      contents: write
+      id-token: write
+      actions: read
+      security-events: write
+    outputs:
+      release_id: ${{ steps.create_release.outputs.id }}
+      release_tag: ${{ inputs.zabbix_version }}
+    env:
+      IMAGE_NAME: zabbix-proxy-sqlite3
+      BUILDCACHE_TAG: buildcache
+      CACHE_PATH: /tmp/buildkit-cache
+    steps:
+      - uses: actions/checkout@v4
+
+      # Security: Verify checkout integrity
+      - name: Verify repository integrity
+        run: |
+          echo "Verifying repository state..."
+          git fsck --no-progress --no-dangling
+          echo "Repository integrity check passed"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: image=moby/buildkit:latest
+
+      # Security: Use OIDC token instead of PAT when possible
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up BuildKit cache
+        uses: reproducible-containers/buildkit-cache-dance@v3.2.0
+        with:
+          cache-map: '{"main": {"path": "${{ env.CACHE_PATH }}", "max-bytes": 10737418240}}'
+          scratch-dir: /tmp/buildkit-cache-scratch
+
+      # Security: Generate SBOM during build
+      - name: Build and push images
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          provenance: true  # Security: Enable provenance attestation
+          sbom: true       # Security: Generate SBOM
+          cache-from: |
+            type=gha,scope=buildkit-${{ inputs.zabbix_version }}
+            type=registry,ref=ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ env.BUILDCACHE_TAG }}
+          cache-to: |
+            type=gha,scope=buildkit-${{ inputs.zabbix_version }},mode=max
+            type=registry,ref=ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ env.BUILDCACHE_TAG }},mode=max
+          build-args: |
+            ZABBIX_VERSION=ubuntu-${{ inputs.zabbix_version }}
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ inputs.zabbix_version }}
+            ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ inputs.major_minor }}
+            ${{ inputs.is_latest == 'true' && format('ghcr.io/{0}/{1}:lts', github.repository_owner, env.IMAGE_NAME) || '' }}
+            ${{ inputs.zabbix_version == inputs.latest_version && format('ghcr.io/{0}/{1}:latest', github.repository_owner, env.IMAGE_NAME) || '' }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.description=Zabbix Proxy SQLite3 for AV Systems
+            org.opencontainers.image.licenses=AGPL-3.0
+            org.zabbix.upstream.version=${{ inputs.zabbix_version }}
+
+      # Security: Scan container for vulnerabilities
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ inputs.zabbix_version }}
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          severity: 'CRITICAL,HIGH'
+
+      # Security: Upload vulnerability scan results
+      - name: Upload Trivy scan results to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+      - name: Prune build cache (weekly)
+        if: github.event_name == 'schedule'
+        run: |
+          echo "Pruning build cache to prevent excessive growth..."
+          docker buildx prune --all --force
+
+      - name: Generate release notes
+        id: release_notes
+        run: |
+          VERSION="${{ inputs.zabbix_version }}"
+          MAJOR_MINOR="${{ inputs.major_minor }}"
+          IS_LATEST="${{ inputs.is_latest }}"
+          cat > release_notes.md <<EOF
+          ## Zabbix Proxy SQLite3 for AV Systems - v$VERSION
+
+          ### 📦 Base Version
+          - **Zabbix Upstream**: $VERSION
+
+          ### 🛠️ Container Features
+          - **Network Monitoring**: ping, traceroute, mtr, fping, nmap, netcat
+          - **SNMP Support**: Full SNMP toolkit with MIB support
+          - **Kubernetes**: kubectl for container orchestration monitoring
+          - **Speed Testing**: Dual implementation (Cloudflare Speedtest & Ookla Speedtest CLI)
+          - **Custom Scripts**: AV-specific monitoring utilities
+
+          ### 📥 Container Images
+          ```bash
+          # Pull this specific version
+          docker pull ghcr.io/${{ github.repository_owner }}/zabbix-proxy-sqlite3:$VERSION
+          ```
+
+          ### 🏷️ Available Tags
+          - \\`$VERSION\\` - This specific version
+          - \\`$MAJOR_MINOR\\` - Latest patch for this major.minor
+          $(if [ "$IS_LATEST" = "true" ]; then echo "- \\`lts\\` - Long-Term Support version (most stable)"; fi)
+          $(if [ "$VERSION" = "${{ inputs.latest_version }}" ]; then echo "- \\`latest\\` - Latest bleeding edge version"; fi)
+          EOF
+
+      - name: Extract SBOM from built image
+        run: |
+          IMAGE_TAG=ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ inputs.zabbix_version }}
+          CONTAINER_ID=$(docker create $IMAGE_TAG)
+          docker cp $CONTAINER_ID:/usr/local/share/zabbix-proxy-sbom.txt ./zabbix-proxy-sbom-${{ inputs.zabbix_version }}.txt
+          docker rm $CONTAINER_ID
+
+      - name: Validate SBOM contents
+        id: validate_sbom
+        run: |
+          SBOM=./zabbix-proxy-sbom-${{ inputs.zabbix_version }}.txt
+          echo "## SBOM Validation for $SBOM" >> $GITHUB_STEP_SUMMARY
+          REQUIRED_TOOLS=(zabbix-proxy-sqlite3 kubectl jq nmap fping mtr traceroute iproute2 snmpwalk curl wget expect jo nano gnupg tcpdump netcat)
+          # Check either Ookla speedtest or Cloudflare speedtest
+          if grep -q "^ookla-speedtest:" "$SBOM" || grep -q "^cloudflare-speedtest:" "$SBOM"; then
+            echo ":white_check_mark: At least one speedtest implementation found" >> $GITHUB_STEP_SUMMARY
+          else
+            echo ":x: No speedtest implementation found" >> $GITHUB_STEP_SUMMARY
+            MISSING=1
+          fi
+          MISSING=0
+
+          echo "### SBOM Contents" >> $GITHUB_STEP_SUMMARY
+          cat "$SBOM" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          echo "### Validation Results" >> $GITHUB_STEP_SUMMARY
+          for TOOL in "${REQUIRED_TOOLS[@]}"; do
+            if ! grep -q "^$TOOL:" "$SBOM"; then
+              echo ":x: $TOOL version not found in SBOM" >> $GITHUB_STEP_SUMMARY
+              MISSING=1
+            elif grep -q "^$TOOL: Not installed properly" "$SBOM"; then
+              echo ":warning: $TOOL installed but may have issues - $(grep "^$TOOL:" "$SBOM")" >> $GITHUB_STEP_SUMMARY
+              MISSING=1
+            else
+              VERSION=$(grep "^$TOOL:" "$SBOM" | sed 's/^[^:]*: //')
+              echo ":white_check_mark: $TOOL version found: $VERSION" >> $GITHUB_STEP_SUMMARY
+            fi
+          done
+          if [ "$MISSING" -eq 1 ]; then
+            echo "::warning::Some required tools are missing from the SBOM or have installation issues. See summary for details."
+          else
+            echo "All required tools are present in the SBOM."
+          fi
+
+      - name: Create GitHub Release with SBOM asset
+        id: create_release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.zabbix_version }}
+          name: "Zabbix Proxy SQLite3 AV - v${{ inputs.zabbix_version }}"
+          body_path: release_notes.md
+          draft: false
+          prerelease: false
+          make_latest: ${{ inputs.is_latest == 'true' }}
+          files: ./zabbix-proxy-sbom-${{ inputs.zabbix_version }}.txt
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

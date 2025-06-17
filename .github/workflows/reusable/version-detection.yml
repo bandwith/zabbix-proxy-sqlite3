@@ -1,0 +1,76 @@
+name: Version Detection
+
+on:
+  workflow_call:
+    outputs:
+      latest_version:
+        description: "Latest stable Zabbix version"
+        value: ${{ jobs.detect-versions.outputs.latest_version }}
+      lts_version:
+        description: "LTS Zabbix version"
+        value: ${{ jobs.detect-versions.outputs.lts_version }}
+      all_versions:
+        description: "All supported Zabbix versions (comma-separated)"
+        value: ${{ jobs.detect-versions.outputs.all_versions }}
+      matrix:
+        description: "JSON matrix for building containers"
+        value: ${{ jobs.detect-versions.outputs.matrix }}
+
+jobs:
+  detect-versions:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      latest_version: ${{ steps.fetch_versions.outputs.latest_version }}
+      lts_version: ${{ steps.fetch_versions.outputs.lts_version }}
+      all_versions: ${{ steps.fetch_versions.outputs.all_versions }}
+      matrix: ${{ steps.generate_matrix.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch and save official Zabbix versions
+        id: fetch_versions
+        run: |
+          curl -s "https://services.zabbix.com/updates/v1" > .github/zabbix-versions.json
+          if ! jq . .github/zabbix-versions.json > /dev/null; then
+            echo "Error: Invalid JSON received from Zabbix API"
+            exit 1
+          fi
+          SUPPORTED_VERSIONS=$(jq -r '.versions[] | select(.end_of_full_support == false) | .latest_release.release' .github/zabbix-versions.json | sort -V)
+          LTS_VERSION=""
+          for VERSION in $SUPPORTED_VERSIONS; do
+            [[ -z "$VERSION" ]] && continue
+            MINOR=$(echo "$VERSION" | cut -d. -f2)
+            if [[ "$MINOR" == "0" ]]; then
+              LTS_VERSION="$VERSION"
+            fi
+          done
+          if [[ -z "$LTS_VERSION" ]]; then
+            LTS_VERSION=$(echo "$SUPPORTED_VERSIONS" | head -n1)
+          fi
+          LATEST_VERSION=$(echo "$SUPPORTED_VERSIONS" | tail -n1)
+          echo "latest_version=$LATEST_VERSION" >> "$GITHUB_OUTPUT"
+          echo "lts_version=$LTS_VERSION" >> "$GITHUB_OUTPUT"
+          echo "all_versions=$(echo "$SUPPORTED_VERSIONS" | tr '\n' ',')" >> "$GITHUB_OUTPUT"
+
+      - name: Generate matrix
+        id: generate_matrix
+        run: |
+          SUPPORTED_VERSIONS=$(jq -r '.versions[] | select(.end_of_full_support == false) | .latest_release.release' .github/zabbix-versions.json | sort -V)
+          LTS_VERSION="${{ steps.fetch_versions.outputs.lts_version }}"
+          MATRIX_JSON='{"include":['
+          FIRST=true
+          for VERSION in $SUPPORTED_VERSIONS; do
+            [[ -z "$VERSION" ]] && continue
+            if [[ "$FIRST" != true ]]; then MATRIX_JSON+=','; fi
+            FIRST=false
+            MAJOR_MINOR=$(echo "$VERSION" | cut -d. -f1,2)
+            IS_LATEST="false"
+            if [[ "$VERSION" == "$LTS_VERSION" ]]; then IS_LATEST="true"; fi
+            MATRIX_JSON+="{\"zabbix_version\":\"$VERSION\",\"major_minor\":\"$MAJOR_MINOR\",\"is_latest\":$IS_LATEST}"
+          done
+          MATRIX_JSON+=']}'
+          echo "matrix=$MATRIX_JSON" >> "$GITHUB_OUTPUT"

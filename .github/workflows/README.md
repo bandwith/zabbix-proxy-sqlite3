@@ -16,14 +16,27 @@ This is the primary workflow for this repository. It handles:
 - When changes are pushed to the `main` branch affecting the `Dockerfile`, `scripts/` directory, or the workflow itself
 - Manually via the "Run workflow" button with option to force rebuild all containers
 
-## Deprecated Workflows
+## Reusable Workflows
 
-The following workflows are kept for reference but have been disabled:
+The CI process has been refactored into modular, reusable workflows in the `reusable/` directory:
 
-- **release.yml**: Replaced by ci-release.yml
-- **manual-release.yml**: Replaced by ci-release.yml
-- **build-and-push.yml**: Replaced by ci-release.yml
-- **update-versions.yml**: Functionality integrated into ci-release.yml
+- **version-detection.yml**: Detects supported Zabbix versions and generates the build matrix
+- **check-changes.yml**: Determines if containers need rebuilding based on changes or schedule
+- **update-docs.yml**: Updates documentation with available Zabbix versions
+- **build-container.yml**: Builds, scans, and publishes Docker images for specific versions
+- **cleanup.yml**: Handles cleanup of failed releases and tags
+
+### Workflow Architecture
+
+```
+ci-release.yml (orchestrator)
+  ↓
+  ├─ version-detection.yml
+  ├─ check-changes.yml
+  ├─ update-docs.yml
+  └─ build-container.yml (matrix strategy)
+      └─ cleanup.yml (on failure)
+```
 
 ## Supporting Workflows
 
