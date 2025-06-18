@@ -162,6 +162,10 @@ RUN mkdir -p /etc/apt/preferences.d && \
     echo "Package: *" > /etc/apt/preferences.d/99-security-updates && \
     echo "Pin: release l=Ubuntu,o=Ubuntu,a=noble-security" >> /etc/apt/preferences.d/99-security-updates && \
     echo "Pin-Priority: 990" >> /etc/apt/preferences.d/99-security-updates && \
+    # Create apt preferences to allow specific backports packages with high priority (equal to security)
+    echo "Package: *" > /etc/apt/preferences.d/97-backports && \
+    echo "Pin: release a=noble-backports" >> /etc/apt/preferences.d/97-backports && \
+    echo "Pin-Priority: 990" >> /etc/apt/preferences.d/97-backports && \
     # Clean up apt lists to prevent duplicates
     rm -rf /var/lib/apt/lists/* && \
     # Disable apt translation files to reduce update size
