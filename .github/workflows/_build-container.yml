@@ -59,6 +59,32 @@ jobs:
         with:
           driver-opts: image=moby/buildkit:latest
 
+      # Verify that the upstream Zabbix image exists before proceeding
+      - name: Verify upstream Zabbix image exists
+        id: check_upstream_image
+        continue-on-error: true
+        run: |
+          UPSTREAM_IMAGE="zabbix/zabbix-proxy-sqlite3:ubuntu-${{ inputs.zabbix_version }}"
+          echo "Checking if upstream image exists: $UPSTREAM_IMAGE"
+
+          # Attempt to pull the image to verify it exists
+          if docker pull "$UPSTREAM_IMAGE" &>/dev/null; then
+            echo "✅ Upstream image $UPSTREAM_IMAGE exists and is accessible"
+            echo "upstream_exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "❌ ERROR: Upstream image $UPSTREAM_IMAGE does not exist or is not accessible"
+            echo "::warning::Upstream image $UPSTREAM_IMAGE not found! Build will likely fail."
+            echo "upstream_exists=false" >> $GITHUB_OUTPUT
+
+            # Add information to step summary
+            echo "## ⚠️ Upstream Image Verification Failed" >> $GITHUB_STEP_SUMMARY
+            echo "| Status | Details |" >> $GITHUB_STEP_SUMMARY
+            echo "| ------ | ------- |" >> $GITHUB_STEP_SUMMARY
+            echo "| ❌ Failed | Upstream image \`$UPSTREAM_IMAGE\` does not exist or is not accessible |" >> $GITHUB_STEP_SUMMARY
+            echo "| 📝 Impact | The build will likely fail as it depends on this base image |" >> $GITHUB_STEP_SUMMARY
+            echo "| 🔍 Resolution | Verify that the Zabbix version specified is correct and available |" >> $GITHUB_STEP_SUMMARY
+          fi
+
       # Security: Use OIDC token instead of PAT when possible
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
@@ -127,6 +153,9 @@ jobs:
 
       # Security: Generate SBOM during build with max-level provenance
       - name: Build and push images
+        id: build_push
+        # Only run this step if the upstream image check was successful (upstream_exists is true or not defined)
+        if: success() && (steps.check_upstream_image.outputs.upstream_exists != 'false')
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -179,11 +208,30 @@ jobs:
             org.zabbix.vcs.ref=${{ github.sha }}
             org.zabbix.container.immutable=true
 
+      # Record build attempt status with upstream verification results
+      - name: Record build attempt status
+        if: always()
+        run: |
+          echo "## 🏗️ Build Attempt Status" >> $GITHUB_STEP_SUMMARY
+
+          # Check if upstream verification was successful
+          if [[ "${{ steps.check_upstream_image.outputs.upstream_exists }}" == "false" ]]; then
+            echo "| ❌ Stopped | Build was skipped because upstream image verification failed |" >> $GITHUB_STEP_SUMMARY
+            echo "| 🔍 Resolution | Verify that Zabbix version ${{ inputs.zabbix_version }} exists in the Docker Hub registry |" >> $GITHUB_STEP_SUMMARY
+            echo "| 🔎 Check | Use 'docker pull zabbix/zabbix-proxy-sqlite3:ubuntu-${{ inputs.zabbix_version }}' to verify |" >> $GITHUB_STEP_SUMMARY
+            echo "| 📚 Reference | See available versions at [Docker Hub](https://hub.docker.com/r/zabbix/zabbix-proxy-sqlite3/tags) |" >> $GITHUB_STEP_SUMMARY
+          else
+            # Add build information only if build wasn't skipped
+            echo "| ✅ Status | Build attempt proceeded with upstream image |" >> $GITHUB_STEP_SUMMARY
+            echo "| 🏷️ Image Tag | ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ steps.local_version.outputs.local_version }} |" >> $GITHUB_STEP_SUMMARY
+            echo "| 📋 Zabbix Version | ${{ inputs.zabbix_version }} |" >> $GITHUB_STEP_SUMMARY
+          fi
+
       # Security: Scan container for vulnerabilities
       - name: Run Trivy vulnerability scanner for ${{ steps.local_version.outputs.local_version }}
         uses: aquasecurity/trivy-action@master
         id: trivy_scan
-        if: success() && steps.local_version.outputs.local_version != ''
+        if: success() && steps.local_version.outputs.local_version != '' && steps.check_upstream_image.outputs.upstream_exists != 'false'
         continue-on-error: true
         with:
           image-ref: ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ steps.local_version.outputs.local_version }}
@@ -202,7 +250,7 @@ jobs:
       - name: Generate SPDX SBOM for ${{ steps.local_version.outputs.local_version }}
         uses: aquasecurity/trivy-action@master
         id: spdx_sbom
-        if: success() && steps.local_version.outputs.local_version != ''
+        if: success() && steps.local_version.outputs.local_version != '' && steps.check_upstream_image.outputs.upstream_exists != 'false'
         continue-on-error: true
         with:
           image-ref: ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ steps.local_version.outputs.local_version }}
@@ -240,7 +288,7 @@ jobs:
       # Generate SBOM and submit to GitHub dependency graph using Anchore SBOM Action
       - name: Generate SBOM and submit ${{ steps.local_version.outputs.local_version }} to GitHub dependency graph
         uses: anchore/sbom-action@v0
-        if: success() && steps.local_version.outputs.local_version != ''
+        if: success() && steps.local_version.outputs.local_version != '' && steps.check_upstream_image.outputs.upstream_exists != 'false'
         continue-on-error: true
         with:
           image: ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ steps.local_version.outputs.local_version }}
@@ -249,7 +297,7 @@ jobs:
 
       # Verify Docker Image Attestations
       - name: Verify Docker Image Attestations for ${{ steps.local_version.outputs.local_version }}
-        if: success() && steps.local_version.outputs.local_version != ''
+        if: success() && steps.local_version.outputs.local_version != '' && steps.check_upstream_image.outputs.upstream_exists != 'false'
         run: |
           echo "## Docker Image Attestations" >> $GITHUB_STEP_SUMMARY
           echo "Verifying attestations for image: ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ steps.local_version.outputs.local_version }}" >> $GITHUB_STEP_SUMMARY
@@ -369,7 +417,7 @@ jobs:
           EOF
 
       - name: Extract SBOM from ${{ steps.local_version.outputs.local_version }} built image
-        if: success() && steps.local_version.outputs.local_version != ''
+        if: success() && steps.local_version.outputs.local_version != '' && steps.check_upstream_image.outputs.upstream_exists != 'false'
         continue-on-error: true
         run: |
           IMAGE_TAG=ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ steps.local_version.outputs.local_version }}
@@ -379,7 +427,7 @@ jobs:
 
       # Verify image metadata was properly applied
       - name: Verify OCI metadata for ${{ steps.local_version.outputs.local_version }}
-        if: success() && steps.local_version.outputs.local_version != ''
+        if: success() && steps.local_version.outputs.local_version != '' && steps.check_upstream_image.outputs.upstream_exists != 'false'
         run: |
           echo "## OCI Metadata Validation" >> $GITHUB_STEP_SUMMARY
           IMAGE_TAG=ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ steps.local_version.outputs.local_version }}
@@ -414,7 +462,7 @@ jobs:
 
       - name: Validate SBOM contents for ${{ steps.local_version.outputs.local_version }}
         id: validate_sbom
-        if: success() && steps.local_version.outputs.local_version != ''
+        if: success() && steps.local_version.outputs.local_version != '' && steps.check_upstream_image.outputs.upstream_exists != 'false'
         continue-on-error: true
         run: |
           SBOM=./zabbix-proxy-sbom-${{ steps.local_version.outputs.local_version }}.txt
@@ -463,6 +511,7 @@ jobs:
       # Prepare file list for release assets
       - name: Prepare release assets
         id: prepare_assets
+        if: steps.check_upstream_image.outputs.upstream_exists != 'false'
         run: |
           ASSETS=""
           SBOM_FILE="./zabbix-proxy-sbom-${{ steps.local_version.outputs.local_version }}.txt"
@@ -484,6 +533,7 @@ jobs:
 
       - name: Create GitHub Release for ${{ steps.local_version.outputs.local_version }}
         id: create_release
+        if: steps.check_upstream_image.outputs.upstream_exists != 'false'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.local_version.outputs.local_version }}
