@@ -419,14 +419,14 @@ jobs:
         run: |
           SBOM=./zabbix-proxy-sbom-${{ steps.local_version.outputs.local_version }}.txt
           echo "## SBOM Validation for $SBOM" >> $GITHUB_STEP_SUMMARY
-          
+
           # First check if file exists
           if [ ! -f "$SBOM" ]; then
             echo ":x: SBOM file not found: $SBOM" >> $GITHUB_STEP_SUMMARY
             echo "::warning::SBOM file not found: $SBOM"
             exit 0  # Exit gracefully to not fail the build
           fi
-          
+
           REQUIRED_TOOLS=(zabbix-proxy-sqlite3 kubectl jq nmap fping mtr traceroute iproute2 snmpwalk curl wget expect jo nano gnupg tcpdump netcat)
           # Check either Ookla speedtest or Cloudflare speedtest
           if grep -q "^ookla-speedtest:" "$SBOM" || grep -q "^cloudflare-speedtest:" "$SBOM"; then
@@ -467,17 +467,17 @@ jobs:
           ASSETS=""
           SBOM_FILE="./zabbix-proxy-sbom-${{ steps.local_version.outputs.local_version }}.txt"
           SPDX_FILE="./sbom-spdx.json"
-          
+
           if [ -f "$SBOM_FILE" ]; then
             ASSETS="${ASSETS}${SBOM_FILE}\n"
             echo "SBOM file exists and will be included in release"
           fi
-          
+
           if [ -f "$SPDX_FILE" ]; then
             ASSETS="${ASSETS}${SPDX_FILE}"
             echo "SPDX file exists and will be included in release"
           fi
-          
+
           echo "assets<<EOF" >> $GITHUB_OUTPUT
           echo -e "$ASSETS" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
