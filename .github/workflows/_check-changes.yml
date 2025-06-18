@@ -1,4 +1,4 @@
-name: Check for Changes
+name: -- reusable -- Check for Changes
 
 on:
   workflow_call:
