@@ -1,7 +1,7 @@
 # 🔍 Zabbix Proxy SQLite3 for AV System Monitoring
 
-[![Build & Push](https://github.com/justprosound/zabbix-proxy-sqlite3-av-edition/actions/workflows/ci-release.yml/badge.svg)](https://github.com/justprosound/zabbix-proxy-sqlite3-av-edition/actions/workflows/ci-release.yml)
-[![GitHub Release](https://img.shields.io/github/v/release/justprosound/zabbix-proxy-sqlite3-av-edition)](https://github.com/justprosound/zabbix-proxy-sqlite3-av-edition/releases)
+[![Build & Push](https://github.com/bandwith/zabbix-proxy-sqlite3/actions/workflows/ci-release.yml/badge.svg)](https://github.com/bandwith/zabbix-proxy-sqlite3/actions/workflows/ci-release.yml)
+[![GitHub Release](https://img.shields.io/github/v/release/bandwith/zabbix-proxy-sqlite3)](https://github.com/justprosound/zabbix-proxy-sqlite3-av-edition/releases)
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL%203.0-blue.svg)](LICENSE)
 
 ## 📋 Overview
@@ -42,7 +42,7 @@ docker run -d \
   -e ZBX_PROXYMEMORYBUFFERAGE=1800 \
   -e ZBX_PROXYMEMORYBUFFERSIZE=256M \
   -e ZBX_ENABLEREMOTECOMMANDS=1 \
-  ghcr.io/justprosound/zabbix-proxy-sqlite3-av-edition:latest
+  ghcr.io/bandwith/zabbix-proxy-sqlite3:latest
 ```
 
 ### Docker Compose
@@ -51,7 +51,7 @@ docker run -d \
 ---
 services:
   zabbix-proxy:
-    image: ghcr.io/justprosound/zabbix-proxy-sqlite3-av-edition:latest
+    image: ghcr.io/bandwith/zabbix-proxy-sqlite3:latest
     container_name: zabbix-proxy-av
     restart: unless-stopped
     ports:
@@ -102,13 +102,13 @@ Historical versions (7.0.0+) can be built on demand using the "Build Historical 
 #### GitHub Container Registry (Recommended)
 ```bash
 # Pull the latest version (highest version number)
-docker pull ghcr.io/justprosound/zabbix-proxy-sqlite3-av-edition:latest
+docker pull ghcr.io/bandwith/zabbix-proxy-sqlite3:latest
 
 # Pull the LTS version (most stable)
-docker pull ghcr.io/justprosound/zabbix-proxy-sqlite3-av-edition:lts
+docker pull ghcr.io/bandwith/zabbix-proxy-sqlite3:lts
 
 # Pull a specific version
-docker pull ghcr.io/justprosound/zabbix-proxy-sqlite3-av-edition:7.0.13
+docker pull ghcr.io/bandwith/zabbix-proxy-sqlite3:7.0.13
 ```
 
 > **Note**: Replace `GITHUB_USERNAME` with your GitHub username/organization when using a fork of this repository. The image name will be automatically adjusted based on your repository name.
@@ -204,8 +204,8 @@ docker pull ghcr.io/justprosound/zabbix-proxy-sqlite3-av-edition:7.0.13
 ## 📚 Documentation & Support
 
 - 📖 [Official Zabbix Documentation](https://www.zabbix.com/documentation/)
-- 🐛 [Issue Tracker](https://github.com/justprosound/zabbix-proxy-sqlite3-av-edition/issues)
-- 💬 [Discussions](https://github.com/justprosound/zabbix-proxy-sqlite3-av-edition/discussions)
+- 🐛 [Issue Tracker](https://github.com/bandwith/zabbix-proxy-sqlite3/issues)
+- 💬 [Discussions](https://github.com/bandwith/zabbix-proxy-sqlite3/discussions)
 - 📧 [Contact](https://hyperscaleav.com/)
 
 ---
@@ -230,6 +230,6 @@ This project is licensed under the **GNU AGPLv3** (Affero General Public License
 
 **Built with ❤️ for the AV monitoring community**
 
-[🌟 Star this repo](https://github.com/justprosound/zabbix-proxy-sqlite3-av-edition) • [🐛 Report Bug](https://github.com/justprosound/zabbix-proxy-sqlite3-av-edition/issues) • [💡 Request Feature](https://github.com/justprosound/zabbix-proxy-sqlite3-av-edition/issues)
+[🌟 Star this repo](https://github.com/bandwith/zabbix-proxy-sqlite3) • [🐛 Report Bug](https://github.com/bandwith/zabbix-proxy-sqlite3/issues) • [💡 Request Feature](https://github.com/bandwith/zabbix-proxy-sqlite3/issues)
 
 </div>
