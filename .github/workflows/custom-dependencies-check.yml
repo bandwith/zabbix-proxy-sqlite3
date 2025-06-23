@@ -1,0 +1,363 @@
+name: Custom Dependencies Check
+
+on:
+  schedule:
+    # Run weekly on Monday at 01:00 UTC (different time than Dependabot to avoid overlapping)
+    - cron: '0 1 * * 1'
+  # Allow manual triggering
+  workflow_dispatch:
+    inputs:
+      force_check:
+        description: 'Force check all dependencies'
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  check-zabbix-version:
+    name: Check Zabbix Version Updates
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    outputs:
+      has_update: ${{ steps.check_version.outputs.has_update }}
+      current_version: ${{ steps.check_version.outputs.current_version }}
+      latest_version: ${{ steps.check_version.outputs.latest_version }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Extract current Zabbix version from Dockerfile
+        id: extract_version
+        run: |
+          CURRENT_VERSION=$(grep -oP 'ARG ZABBIX_VERSION=ubuntu-\K[0-9]+\.[0-9]+\.[0-9]+' Dockerfile || echo "")
+          echo "Current Zabbix version: $CURRENT_VERSION"
+          echo "current_version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
+
+      - name: Check latest Zabbix version from API
+        id: check_version
+        run: |
+          # Get current version from previous step
+          CURRENT_VERSION="${{ steps.extract_version.outputs.current_version }}"
+          if [[ -z "$CURRENT_VERSION" ]]; then
+            echo "::error::Could not extract current Zabbix version from Dockerfile"
+            exit 1
+          fi
+
+          # Extract major.minor version
+          MAJOR_MINOR=$(echo $CURRENT_VERSION | grep -oP '^[0-9]+\.[0-9]+')
+
+          # Fetch Zabbix API data
+          echo "Fetching data from Zabbix API..."
+          if ! curl -s -f -S "https://services.zabbix.com/updates/v1" > zabbix-versions.json; then
+            echo "::error::Failed to fetch Zabbix versions from API"
+            exit 1
+          fi
+
+          # Get latest version for current major.minor
+          LATEST_VERSION=$(jq -r ".versions[] | select(.version == \"$MAJOR_MINOR\") | .latest_release.release" zabbix-versions.json)
+          if [[ -z "$LATEST_VERSION" ]]; then
+            echo "::warning::Could not find latest version for $MAJOR_MINOR"
+            # Fallback to using the current version
+            LATEST_VERSION=$CURRENT_VERSION
+          fi
+
+          echo "Current version: $CURRENT_VERSION"
+          echo "Latest version: $LATEST_VERSION"
+
+          # Compare versions
+          if [[ "$CURRENT_VERSION" != "$LATEST_VERSION" ]]; then
+            echo "has_update=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_update=false" >> $GITHUB_OUTPUT
+          fi
+
+          echo "current_version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
+          echo "latest_version=$LATEST_VERSION" >> $GITHUB_OUTPUT
+
+          # Create annotation
+          if [[ "$CURRENT_VERSION" != "$LATEST_VERSION" ]]; then
+            echo "::notice::Zabbix update available: $CURRENT_VERSION → $LATEST_VERSION"
+          fi
+
+  check-speedtest-cli:
+    name: Check Speedtest CLI Updates
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    outputs:
+      has_update: ${{ steps.check_version.outputs.has_update }}
+      current_version: ${{ steps.check_version.outputs.current_version }}
+      latest_version: ${{ steps.check_version.outputs.latest_version }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Extract current Speedtest CLI version
+        id: extract_version
+        run: |
+          CURRENT_VERSION=$(grep -oP 'ookla-speedtest-\K[0-9]+\.[0-9]+\.[0-9]+(?=-linux-x86_64.tgz)' Dockerfile || echo "")
+          echo "Current Speedtest CLI version: $CURRENT_VERSION"
+          echo "current_version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
+
+      - name: Check latest Speedtest CLI version
+        id: check_version
+        run: |
+          # Get current version from previous step
+          CURRENT_VERSION="${{ steps.extract_version.outputs.current_version }}"
+          if [[ -z "$CURRENT_VERSION" ]]; then
+            echo "::error::Could not extract current Speedtest CLI version from Dockerfile"
+            exit 1
+          fi
+
+          # Fetch Speedtest CLI page
+          SPEEDTEST_PAGE=$(curl -s "https://install.speedtest.net/app/cli/")
+
+          # Extract latest version
+          LATEST_VERSION=$(echo "$SPEEDTEST_PAGE" | grep -oP 'ookla-speedtest-\K[0-9]+\.[0-9]+\.[0-9]+(?=-linux-x86_64.tgz)' | sort -V | tail -n1)
+
+          if [[ -z "$LATEST_VERSION" ]]; then
+            echo "::warning::Could not find latest version for Speedtest CLI"
+            # Fallback to using the current version
+            LATEST_VERSION=$CURRENT_VERSION
+          fi
+
+          echo "Current version: $CURRENT_VERSION"
+          echo "Latest version: $LATEST_VERSION"
+
+          # Compare versions
+          if [[ "$CURRENT_VERSION" != "$LATEST_VERSION" ]]; then
+            echo "has_update=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_update=false" >> $GITHUB_OUTPUT
+          fi
+
+          echo "current_version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
+          echo "latest_version=$LATEST_VERSION" >> $GITHUB_OUTPUT
+
+          # Create annotation
+          if [[ "$CURRENT_VERSION" != "$LATEST_VERSION" ]]; then
+            echo "::notice::Speedtest CLI update available: $CURRENT_VERSION → $LATEST_VERSION"
+          fi
+
+  check-cloudflarepycli:
+    name: Check Cloudflare PySpeedtest Updates
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    outputs:
+      has_update: ${{ steps.check_version.outputs.has_update }}
+      current_version: ${{ steps.check_version.outputs.current_version }}
+      latest_version: ${{ steps.check_version.outputs.latest_version }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Extract current CloudflarePyCLI version
+        id: extract_version
+        run: |
+          CURRENT_VERSION=$(grep -oP '/opt/venv/bin/pip install --no-cache-dir cloudflarepycli(?:@\K[0-9]+\.[0-9]+\.[0-9]+)?' Dockerfile | grep -oP '[0-9]+\.[0-9]+\.[0-9]+' || echo "")
+          if [[ -z "$CURRENT_VERSION" ]]; then
+            echo "::warning::No specific version pinned for CloudflarePyCLI, assuming latest"
+            CURRENT_VERSION="latest"
+          fi
+          echo "Current CloudflarePyCLI version: $CURRENT_VERSION"
+          echo "current_version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
+
+      - name: Check latest CloudflarePyCLI version
+        id: check_version
+        run: |
+          # Get current version from previous step
+          CURRENT_VERSION="${{ steps.extract_version.outputs.current_version }}"
+
+          # Get latest version from PyPI
+          LATEST_VERSION=$(pip index versions cloudflarepycli 2>/dev/null | grep -oP 'Available versions: \K.*' | tr ',' ' ' | awk '{print $NF}')
+
+          if [[ -z "$LATEST_VERSION" ]]; then
+            echo "::warning::Could not find latest version for CloudflarePyCLI on PyPI"
+            # Fallback to using the current version
+            LATEST_VERSION=$CURRENT_VERSION
+          fi
+
+          echo "Current version: $CURRENT_VERSION"
+          echo "Latest version: $LATEST_VERSION"
+
+          # Compare versions (skip if current is "latest")
+          if [[ "$CURRENT_VERSION" != "latest" && "$CURRENT_VERSION" != "$LATEST_VERSION" ]]; then
+            echo "has_update=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_update=false" >> $GITHUB_OUTPUT
+          fi
+
+          echo "current_version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
+          echo "latest_version=$LATEST_VERSION" >> $GITHUB_OUTPUT
+
+          # Create annotation
+          if [[ "$CURRENT_VERSION" != "latest" && "$CURRENT_VERSION" != "$LATEST_VERSION" ]]; then
+            echo "::notice::CloudflarePyCLI update available: $CURRENT_VERSION → $LATEST_VERSION"
+          fi
+
+  check-kubectl:
+    name: Check Kubectl Updates
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    outputs:
+      has_update: ${{ steps.check_version.outputs.has_update }}
+      current_version: ${{ steps.check_version.outputs.current_version }}
+      latest_version: ${{ steps.check_version.outputs.latest_version }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Get current kubectl version
+        id: extract_version
+        run: |
+          # For kubectl, we're using 'stable' from the download URL
+          echo "current_version=stable" >> $GITHUB_OUTPUT
+
+      - name: Get latest kubectl version
+        id: check_version
+        run: |
+          # Get actual version number for 'stable'
+          LATEST_VERSION=$(curl -Ls https://dl.k8s.io/release/stable.txt)
+          LATEST_VERSION=${LATEST_VERSION#v} # Remove 'v' prefix
+
+          echo "Using latest stable kubectl version: $LATEST_VERSION"
+
+          # Since kubectl uses 'stable' tag which always points to latest,
+          # there's never an "outdated" version in the traditional sense,
+          # but we can notify about what version 'stable' currently points to
+          echo "has_update=false" >> $GITHUB_OUTPUT
+          echo "current_version=stable" >> $GITHUB_OUTPUT
+          echo "latest_version=$LATEST_VERSION" >> $GITHUB_OUTPUT
+
+          echo "::notice::kubectl 'stable' tag currently points to version $LATEST_VERSION"
+
+  check-dockerfile-vulnerabilities:
+    name: Check Dockerfile Security Vulnerabilities
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    outputs:
+      has_vulnerabilities: ${{ steps.check_vuln.outputs.has_vulnerabilities }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run Anchore scan-action on Dockerfile
+        id: scan_dockerfile
+        uses: anchore/scan-action@v6
+        with:
+          path: "."
+          fail-build: false
+          severity-cutoff: high
+          output-format: sarif
+
+      - name: Upload scan results to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v3
+        if: success()
+        with:
+          sarif_file: ${{ steps.scan_dockerfile.outputs.sarif }}
+          category: "dockerfile-vulnerabilities"
+
+      - name: Determine if vulnerabilities were found
+        id: check_vuln
+        if: success()
+        run: |
+          if [[ -f "${{ steps.scan_dockerfile.outputs.sarif }}" ]]; then
+            VULN_COUNT=$(jq -r '.runs[].results | length' ${{ steps.scan_dockerfile.outputs.sarif }} || echo "0")
+            if [[ "$VULN_COUNT" -gt 0 ]]; then
+              echo "has_vulnerabilities=true" >> $GITHUB_OUTPUT
+              echo "::warning::Found $VULN_COUNT potential security vulnerabilities in Dockerfile"
+            else
+              echo "has_vulnerabilities=false" >> $GITHUB_OUTPUT
+              echo "No vulnerabilities found in Dockerfile"
+            fi
+          else
+            echo "has_vulnerabilities=false" >> $GITHUB_OUTPUT
+            echo "No scan results file found"
+          fi
+
+  create-dependencies-report:
+    name: Create Dependencies Report
+    needs:
+      - check-zabbix-version
+      - check-speedtest-cli
+      - check-cloudflarepycli
+      - check-kubectl
+      - check-dockerfile-vulnerabilities
+    if: |
+      needs.check-zabbix-version.outputs.has_update == 'true' ||
+      needs.check-speedtest-cli.outputs.has_update == 'true' ||
+      needs.check-cloudflarepycli.outputs.has_update == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Create Dependencies Report
+        run: |
+          cat > dependencies-report.md << EOF
+          # Custom Dependencies Update Report
+
+          This report was generated by the custom dependencies check workflow to identify dependencies that need updating.
+
+          ## Updates Available
+
+          | Dependency | Current Version | Latest Version | Update |
+          | ---------- | -------------- | ------------- | ------ |
+          EOF
+
+          # Add Zabbix version
+          if [[ "${{ needs.check-zabbix-version.outputs.has_update }}" == "true" ]]; then
+            echo -n "| Zabbix | ${{ needs.check-zabbix-version.outputs.current_version }} | " >> dependencies-report.md
+            echo "${{ needs.check-zabbix-version.outputs.latest_version }} | Update \`ARG ZABBIX_VERSION\` in Dockerfile |" >> dependencies-report.md
+          fi
+
+          # Add Speedtest CLI version
+          if [[ "${{ needs.check-speedtest-cli.outputs.has_update }}" == "true" ]]; then
+            echo -n "| Speedtest CLI | ${{ needs.check-speedtest-cli.outputs.current_version }} | " >> dependencies-report.md
+            echo "${{ needs.check-speedtest-cli.outputs.latest_version }} | Update version in Dockerfile |" >> dependencies-report.md
+          fi
+
+          # Add CloudflarePyCLI version
+          if [[ "${{ needs.check-cloudflarepycli.outputs.has_update }}" == "true" ]]; then
+            CURRENT="${{ needs.check-cloudflarepycli.outputs.current_version }}"
+            if [[ "$CURRENT" == "latest" ]]; then
+              CURRENT="unpinned"
+            fi
+            echo "| CloudflarePyCLI | $CURRENT | ${{ needs.check-cloudflarepycli.outputs.latest_version }} | Pin version in Dockerfile |" >> dependencies-report.md
+          fi
+
+          # Add additional information
+          cat >> dependencies-report.md << EOF
+
+          ## How to Update
+
+          1. Create a new branch from \`main\`
+          2. Update the relevant versions in the Dockerfile
+          3. Submit a pull request
+
+          *This issue was automatically created by the custom dependencies check workflow.*
+          EOF
+
+      - name: Create Issue
+        uses: peter-evans/create-issue-from-file@v5
+        with:
+          title: 'Custom Dependencies Update Available'
+          content-filepath: dependencies-report.md
+          labels: dependencies

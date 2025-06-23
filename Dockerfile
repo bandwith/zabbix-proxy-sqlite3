@@ -79,7 +79,7 @@ RUN apt-get update && \
     # Apply security updates
     apt-get upgrade -y && \
     apt-get install -y --no-install-recommends \
-    gnupg ca-certificates apt-transport-https curl dirmngr nodejs npm && \
+    gnupg ca-certificates apt-transport-https curl dirmngr && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
@@ -267,11 +267,11 @@ RUN echo "# SBOM: Included Tool Versions" > /usr/local/share/zabbix-proxy-sbom.t
     echo "custom MIBS directory: /usr/share/snmp/mibs/custom" >> /usr/local/share/zabbix-proxy-sbom.txt && \
     echo "" >> /usr/local/share/zabbix-proxy-sbom.txt && \
     echo "# Kubernetes Management" >> /usr/local/share/zabbix-proxy-sbom.txt && \
-    echo "kubectl: $(kubectl version --client --short 2>/dev/null | head -1)" >> /usr/local/share/zabbix-proxy-sbom.txt && \
+    echo "kubectl: $(kubectl version --client --short 2>/dev/null || kubectl version --client 2>/dev/null || kubectl --version 2>/dev/null || echo "kubectl installed")" >> /usr/local/share/zabbix-proxy-sbom.txt && \
     echo "" >> /usr/local/share/zabbix-proxy-sbom.txt && \
     echo "# Data Processing Tools" >> /usr/local/share/zabbix-proxy-sbom.txt && \
     echo "jq: $(jq --version 2>&1)" >> /usr/local/share/zabbix-proxy-sbom.txt && \
-    echo "jo: $(jo --version 2>&1 | head -1)" >> /usr/local/share/zabbix-proxy-sbom.txt && \
+    echo "jo: $(jo -V 2>&1 || jo --version 2>&1 || echo "jo installed")" >> /usr/local/share/zabbix-proxy-sbom.txt && \
     echo "" >> /usr/local/share/zabbix-proxy-sbom.txt && \
     echo "# Utility and System Tools" >> /usr/local/share/zabbix-proxy-sbom.txt && \
     echo "curl: $(curl --version | head -1)" >> /usr/local/share/zabbix-proxy-sbom.txt && \

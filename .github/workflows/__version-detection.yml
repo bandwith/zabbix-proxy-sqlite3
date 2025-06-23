@@ -1,0 +1,254 @@
+name: ◆ reusable | Version Detection
+
+on:
+  workflow_call:
+    outputs:
+      latest_version:
+        description: "Latest stable Zabbix version (highest version number, e.g., 7.2.7 > 7.0.13)"
+        value: ${{ jobs.zabbix-version-detection.outputs.latest_version }}
+      lts_version:
+        description: "LTS Zabbix version (current LTS release from upstream Zabbix)"
+        value: ${{ jobs.zabbix-version-detection.outputs.lts_version }}
+      all_versions:
+        description: "All supported Zabbix versions (comma-separated)"
+        value: ${{ jobs.zabbix-version-detection.outputs.all_versions }}
+      matrix:
+        description: "JSON matrix for building containers"
+        value: ${{ jobs.zabbix-version-detection.outputs.matrix }}
+
+jobs:
+  zabbix-version-detection:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      latest_version: ${{ steps.fetch_zabbix_versions.outputs.latest_version }}
+      lts_version: ${{ steps.fetch_zabbix_versions.outputs.lts_version }}
+      all_versions: ${{ steps.fetch_zabbix_versions.outputs.all_versions }}
+      matrix: ${{ steps.generate_build_matrix.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch and save official Zabbix versions
+        id: fetch_zabbix_versions
+        run: |
+          # Fetch Zabbix version data
+          echo "Fetching data from Zabbix API..."
+          if ! curl -s -f -S "https://services.zabbix.com/updates/v1" > .github/zabbix-versions.json; then
+            echo "::error::Failed to fetch Zabbix version data from API"
+            exit 1
+          fi
+
+          # Validate the JSON response
+          if ! jq . .github/zabbix-versions.json > /dev/null; then
+            echo "::error::Invalid JSON received from Zabbix API"
+            cat .github/zabbix-versions.json | head -n 50
+            exit 1
+          fi
+
+          # Extract supported versions with proper validation
+          JQ_FILTER='.versions[] | select(.end_of_full_support == false) |
+            if (.latest_release != null) and (.latest_release.release != null) then
+              .latest_release.release
+            else
+              empty
+            end'
+          SUPPORTED_VERSIONS=$(jq -r "$JQ_FILTER" .github/zabbix-versions.json | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V)
+
+          if [ -z "$SUPPORTED_VERSIONS" ]; then
+            echo "::error::No supported versions found in Zabbix API response"
+            cat .github/zabbix-versions.json | jq .
+            exit 1
+          fi
+
+          # Identify LTS version (x.0.x format)
+          # LTS = current LTS release (usually x.0.x format from upstream Zabbix)
+          LTS_VERSION=""
+
+          # First, verify we have valid versions to work with
+          if [ -n "$SUPPORTED_VERSIONS" ]; then
+            # Sort versions to find highest x.0.x version
+            for VERSION in $(echo "$SUPPORTED_VERSIONS" | sort -Vr); do
+              # Skip empty or invalid versions
+              [[ -z "$VERSION" ]] || ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] && continue
+
+              MINOR=$(echo "$VERSION" | cut -d. -f2)
+              if [[ "$MINOR" == "0" ]]; then
+                # Found an LTS version, use the highest one (sorted in reverse)
+                LTS_VERSION="$VERSION"
+                echo "Found LTS version: $LTS_VERSION (x.0.x pattern - current LTS release)"
+                break
+              fi
+            done
+
+            # Fallback if no LTS found - still need to define a current LTS release
+            if [[ -z "$LTS_VERSION" ]]; then
+              # Use oldest supported version as LTS when no x.0.x pattern exists
+              LTS_VERSION=$(echo "$SUPPORTED_VERSIONS" | sort -V | head -n1)
+              echo "No LTS version with x.0.x pattern found, using oldest version as current LTS release: $LTS_VERSION"
+            fi
+          else
+            echo "::error::No valid versions found to determine LTS version"
+            exit 1
+          fi
+
+          # Get latest version (highest version number)
+          # Latest = highest version number regardless of release date
+          # But ensure it's actually a valid version
+          LATEST_VERSION=$(echo "$SUPPORTED_VERSIONS" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n1)
+
+          # Verify we found a valid latest version
+          if [[ -z "$LATEST_VERSION" ]]; then
+            echo "::error::Failed to determine latest version from supported versions list"
+            exit 1
+          fi
+
+          echo "Latest version: $LATEST_VERSION (highest version number)"
+          echo "LTS version: $LTS_VERSION (current LTS release from upstream Zabbix)"
+          echo "All supported versions: $SUPPORTED_VERSIONS"
+
+          # Set outputs for next steps - filter out any empty or invalid entries
+          # Filter out empty values and ensure each version has a valid format (x.y.z)
+          CLEAN_VERSIONS=$(echo "$SUPPORTED_VERSIONS" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V)
+          echo "Filtered versions (removing empty or invalid entries): $CLEAN_VERSIONS"
+
+          echo "latest_version=$LATEST_VERSION" >> "$GITHUB_OUTPUT"
+          echo "lts_version=$LTS_VERSION" >> "$GITHUB_OUTPUT"
+          echo "all_versions=$(echo "$CLEAN_VERSIONS" | tr '\n' ',')" >> "$GITHUB_OUTPUT"
+
+          # Add to step summary
+          echo "## Zabbix Version Detection" >> $GITHUB_STEP_SUMMARY
+          echo "| Type | Version | Description |" >> $GITHUB_STEP_SUMMARY
+          echo "| ---- | ------- | ----------- |" >> $GITHUB_STEP_SUMMARY
+          echo "| Latest | $LATEST_VERSION | Highest version number (e.g., 7.2.7 > 7.0.13) |" >> $GITHUB_STEP_SUMMARY
+          echo "| LTS | $LTS_VERSION | Current LTS release from upstream Zabbix |" >> $GITHUB_STEP_SUMMARY
+          echo "| All Supported | $(echo "$SUPPORTED_VERSIONS" | tr '\n' ', ') | All versions tracked by upstream Zabbix |" >> $GITHUB_STEP_SUMMARY
+
+      - name: Generate build matrix for Zabbix versions
+        id: generate_build_matrix
+        run: |
+          # Reuse the clean, validated versions from the previous step
+          SUPPORTED_VERSIONS="${{ steps.fetch_zabbix_versions.outputs.all_versions }}"
+          # Convert from comma-separated back to newline-separated
+          SUPPORTED_VERSIONS=$(echo "$SUPPORTED_VERSIONS" | tr ',' '\n')
+          LTS_VERSION="${{ steps.fetch_zabbix_versions.outputs.lts_version }}"
+
+          # Create the matrix JSON with proper string escaping
+          echo "Building matrix with these versions: $SUPPORTED_VERSIONS"
+          echo "LTS version (current LTS release): $LTS_VERSION"
+
+          # Use jq to properly create and escape the JSON - ensure all values are treated as strings
+          # Get the latest version (highest version number)
+          LATEST_VERSION=$(echo "$SUPPORTED_VERSIONS" | sort -V | tail -n1)
+
+          # Create matrix with LTS, Latest, and highest version per major.minor flags
+          # Group versions by major.minor and find highest patch version in each group
+          echo "Finding highest patch version for each major.minor series..."
+          declare -A HIGHEST_PATCH
+          for VERSION in $SUPPORTED_VERSIONS; do
+            # Skip empty or invalid versions
+            [[ -z "$VERSION" ]] && continue
+            [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] && continue
+
+            MAJOR_MINOR=$(echo "$VERSION" | cut -d. -f1,2)
+            # Skip invalid major.minor values
+            [[ ! "$MAJOR_MINOR" =~ ^[0-9]+\.[0-9]+$ ]] && continue
+
+            CURRENT_HIGHEST="${HIGHEST_PATCH[$MAJOR_MINOR]}"
+
+            # If no version is set for this major.minor or the current version is higher
+            if [[ -z "$CURRENT_HIGHEST" || $(echo -e "$VERSION\n$CURRENT_HIGHEST" | sort -V | tail -n1) == "$VERSION" ]]; then
+              HIGHEST_PATCH[$MAJOR_MINOR]="$VERSION"
+              echo "Setting $VERSION as highest for $MAJOR_MINOR series"
+            fi
+          done
+
+          # Display the highest patch versions we found
+          echo "Highest patch versions for each major.minor series:"
+          for MAJOR_MINOR in "${!HIGHEST_PATCH[@]}"; do
+            echo "  $MAJOR_MINOR => ${HIGHEST_PATCH[$MAJOR_MINOR]}"
+          done
+
+          # Create the matrix JSON with proper version tagging logic
+          # Build the matrix JSON manually to avoid any jq parsing issues
+          echo "Building matrix data structure..."
+          MATRIX_JSON='{"include": ['
+
+          # Counter to manage commas
+          COUNT=0
+          TOTAL=$(echo "$SUPPORTED_VERSIONS" | wc -w)
+
+          for VERSION in $SUPPORTED_VERSIONS; do
+            # Skip empty lines
+            [[ -z "$VERSION" ]] && continue
+            # Skip invalid versions
+            [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] && continue
+
+            # Extract major.minor
+            MAJOR_MINOR=$(echo "$VERSION" | cut -d. -f1,2)
+
+            # Check for LTS and latest flags
+            IS_LTS="false"
+            IS_LATEST="false"
+            [[ "$VERSION" == "$LTS_VERSION" ]] && IS_LTS="true"
+            [[ "$VERSION" == "$LATEST_VERSION" ]] && IS_LATEST="true"
+
+            # Add this version to the matrix
+            MATRIX_JSON+='{"zabbix_version": "'$VERSION'", "major_minor": "'$MAJOR_MINOR'", "is_lts": "'$IS_LTS'", "is_latest": "'$IS_LATEST'"}'
+
+            # Add comma if not the last item
+            COUNT=$((COUNT + 1))
+            [[ $COUNT -lt $TOTAL ]] && MATRIX_JSON+=', '
+          done
+
+          MATRIX_JSON+=']}'
+
+          # Format for display
+          echo "Generated matrix with proper version tagging (LTS = current LTS release, Latest = highest version number):"
+
+          # Output and validate the matrix
+          # Pretty print for logs
+          echo "$MATRIX_JSON" | jq .
+
+          # Validate JSON format with a simple check
+          if ! echo "$MATRIX_JSON" | jq . > /dev/null; then
+            echo "::error::Generated matrix is not valid JSON. Check the matrix generation logic."
+            echo "Raw matrix: $MATRIX_JSON"
+            exit 1
+          fi
+
+          # Validate content
+          INCLUDE_COUNT=$(echo "$MATRIX_JSON" | jq '.include | length')
+          if [[ "$INCLUDE_COUNT" -lt 1 ]]; then
+            echo "::error::Matrix JSON is invalid: No items in 'include' array"
+            echo "$MATRIX_JSON" | jq .
+            exit 1
+          fi
+
+          # Log what was found
+          echo "Found $INCLUDE_COUNT version(s) for the build matrix"
+
+          # Show the first matrix item for validation
+          if [[ "$INCLUDE_COUNT" -gt 0 ]]; then
+            FIRST_ITEM=$(echo "$MATRIX_JSON" | jq -r '.include[0]')
+            echo "First matrix item (for validation): $FIRST_ITEM"
+          fi
+
+          echo "matrix=$MATRIX_JSON" >> "$GITHUB_OUTPUT"
+
+          # Add validation info to workflow summary
+          echo "## Matrix Generation Summary" >> $GITHUB_STEP_SUMMARY
+          echo "| Version | Major.Minor | Is LTS (Current LTS) | Is Latest (Highest Version) |" >> $GITHUB_STEP_SUMMARY
+          echo "| ------- | ----------- | -------------------- | -------------------------- |" >> $GITHUB_STEP_SUMMARY
+          for VERSION in $SUPPORTED_VERSIONS; do
+            [[ -z "$VERSION" ]] && continue
+            [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] && continue
+            MAJOR_MINOR=$(echo "$VERSION" | cut -d. -f1,2)
+            IS_LTS="No"
+            IS_LATEST="No"
+            if [[ "$VERSION" == "$LTS_VERSION" ]]; then IS_LTS="Yes"; fi
+            if [[ "$VERSION" == "$LATEST_VERSION" ]]; then IS_LATEST="Yes"; fi
+            echo "| $VERSION | $MAJOR_MINOR | $IS_LTS | $IS_LATEST |" >> $GITHUB_STEP_SUMMARY
+          done

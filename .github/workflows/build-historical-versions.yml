@@ -1,0 +1,734 @@
+name: Build Historical Versions
+
+on:
+  schedule:
+    - cron: '0 0 * * 0'  # Run Sunday at midnight UTC
+  workflow_dispatch:
+    inputs:
+      min_version:
+        description: 'Minimum version to start building from (e.g. 7.0.0)'
+        required: true
+        default: '7.0.0'
+      force_rebuild:
+        description: 'Force rebuild even if image already exists'
+        required: false
+        type: boolean
+        default: false
+      custom_image_name:
+        description: 'Optional custom image name (e.g. "my-registry.com/user/repo")'
+        required: false
+        default: ''
+      build_all_patches:
+        description: 'Build all patch versions (0 to latest) for each major.minor series'
+        required: false
+        type: boolean
+        default: false
+  push:
+    branches:
+      - main
+    paths:
+      - 'Dockerfile'
+      - 'scripts/**'
+      - 'mibs/**'
+      - '.github/workflows/**'
+
+# Ensure we don't run concurrent workflows of the same type
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Security: Minimal required permissions
+permissions:
+  contents: write
+  packages: write
+  actions: read
+  id-token: write
+  security-events: write  # For security scanning
+
+env:
+  # Security: Define allowed registries
+  ALLOWED_REGISTRIES: "ghcr.io"
+  REGISTRY: "ghcr.io"
+  # Default repo name, overridable via custom_image_name
+  REPO_NAME: "zabbix-proxy-sqlite3-av-edition"
+  # Default base name for documentation and references
+  BASE_NAME: "Zabbix Proxy SQLite3 AV Edition"
+  # Docker Hub upstream repository
+  UPSTREAM_REPO: "zabbix/zabbix-proxy-sqlite3"
+
+jobs:
+  # Step 1: Get all supported Zabbix versions from API
+  get-supported-versions:
+    uses: ./.github/workflows/__version-detection.yml
+
+  # Step 2: Get all Docker Hub tags matching our pattern
+  get-dockerhub-tags:
+    uses: ./.github/workflows/__dockerhub-tags.yml
+    with:
+      repo: "zabbix/zabbix-proxy-sqlite3"
+      tag_pattern: '^ubuntu-[0-9]+\.[0-9]+\.[0-9]+$'
+      min_version: "${{ inputs.min_version }}"
+
+  # Step 3: Check if we need to rebuild containers
+  check-changes:
+    uses: ./.github/workflows/__check-changes.yml
+
+  # Step 4: Process versions and create build matrix
+  prepare-build-matrix:
+    needs: [get-supported-versions, get-dockerhub-tags, check-changes]
+    if: ${{ needs.check-changes.outputs.should_rebuild == 'true' || inputs.force_rebuild == true }}
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.generate-matrix.outputs.matrix }}
+      versions_to_build: ${{ steps.generate-matrix.outputs.versions_to_build }}
+      target_image: ${{ steps.set-image-name.outputs.image_name }}
+      latest_version: ${{ needs.get-supported-versions.outputs.latest_version }}
+    steps:
+      # Use cache for jq and other dependencies to speed up workflow
+      - name: Cache dependencies
+        uses: actions/cache@v4
+        with:
+          path: /usr/bin/jq
+          key: ${{ runner.os }}-jq-${{ hashFiles('.github/workflows/build-historical-versions.yml') }}
+          restore-keys: |
+            ${{ runner.os }}-jq-
+
+      # Cache Docker configuration to speed up Docker operations
+      - name: Cache Docker config
+        uses: actions/cache@v4
+        with:
+          path: ~/.docker
+          key: ${{ runner.os }}-docker-config-${{ github.run_id }}
+          restore-keys: |
+            ${{ runner.os }}-docker-config-
+
+      - name: Set image name
+        id: set-image-name
+        shell: bash
+        run: |
+          # Check if a custom image name was provided
+          CUSTOM_IMAGE_NAME="${{ inputs.custom_image_name }}"
+
+          if [ -n "$CUSTOM_IMAGE_NAME" ]; then
+            # Use the custom image name
+            IMAGE_NAME="$CUSTOM_IMAGE_NAME"
+            echo "Using custom image name: $IMAGE_NAME"
+          else
+            # Use default naming pattern
+            REGISTRY="${{ env.REGISTRY }}"
+            REPO_NAME="${{ env.REPO_NAME }}"
+            REPO_OWNER="${{ github.repository_owner }}"
+
+            # Get actual repository name from github.repository
+            ACTUAL_REPO="${{ github.repository }}"
+            ACTUAL_REPO_NAME="${ACTUAL_REPO#*/}"
+
+            # Use repo name from actual repository if it doesn't match the default
+            if [[ "$ACTUAL_REPO_NAME" != "zabbix-proxy-sqlite3-av-edition" ]]; then
+              echo "Repository name differs from default, using actual name: $ACTUAL_REPO_NAME"
+              # Try to extract a meaningful name - remove common prefixes/suffixes
+              CLEANED_NAME=$(echo "$ACTUAL_REPO_NAME" | sed -E 's/(zabbix|proxy|sqlite|edition|av)[-_]?//gi' | sed -E 's/[-_]?(zabbix|proxy|sqlite|edition|av)//gi')
+              if [[ -n "$CLEANED_NAME" && "$CLEANED_NAME" != "$ACTUAL_REPO_NAME" ]]; then
+                REPO_NAME="${CLEANED_NAME}-${REPO_NAME}"
+              fi
+            fi
+
+            # Set the full image name
+            IMAGE_NAME="${REGISTRY}/${REPO_OWNER}/${REPO_NAME}"
+            echo "Using default image name: $IMAGE_NAME"
+          fi
+
+          echo "image_name=${IMAGE_NAME}" >> $GITHUB_OUTPUT
+
+      - name: Install jq
+        id: install-jq
+        run: |
+          # Check if jq is already available from cache
+          if [ ! -f "/usr/bin/jq" ] || ! jq --version &>/dev/null; then
+            echo "Installing jq from package manager"
+            sudo apt-get update
+            sudo apt-get install -y jq
+          else
+            echo "Using cached jq installation"
+          fi
+          jq --version
+
+      # Cache Docker manifest check results
+      - name: Restore Docker manifest cache
+        id: manifest-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/docker-manifests
+          key: ${{ runner.os }}-docker-manifests-${{ github.run_id }}
+          restore-keys: |
+            ${{ runner.os }}-docker-manifests-${{ github.event.repository.updated_at }}-
+            ${{ runner.os }}-docker-manifests-
+
+      - name: Filter and process versions
+        id: generate-matrix
+        shell: bash
+        run: |
+          set -e
+          echo "Processing versions with JSON-based approach..."
+
+          # Create cache directories if they don't exist
+          DOCKER_CACHE_DIR=~/.cache/docker-manifests
+          MATRIX_CACHE_DIR=~/.cache/matrix-results
+          mkdir -p "$DOCKER_CACHE_DIR"
+          mkdir -p "$MATRIX_CACHE_DIR"
+
+          # Check if we can use previously cached matrix results
+          MATRIX_CACHE_FILE="$MATRIX_CACHE_DIR/matrix.json"
+          VERSIONS_CACHE_FILE="$MATRIX_CACHE_DIR/versions.txt"
+
+          if [ -f "$MATRIX_CACHE_FILE" ] && [ -f "$VERSIONS_CACHE_FILE" ]; then
+            # Get cache metadata
+            CACHED_MIN_VERSION=$(jq -r '.metadata.min_version // ""' "$MATRIX_CACHE_FILE")
+            CACHED_FORCE_REBUILD=$(jq -r '.metadata.force_rebuild // ""' "$MATRIX_CACHE_FILE")
+            CACHED_BUILD_ALL_PATCHES=$(jq -r '.metadata.build_all_patches // ""' "$MATRIX_CACHE_FILE")
+
+            # Check if inputs match cache
+            if [ "$CACHED_MIN_VERSION" = "${{ inputs.min_version }}" ] && \
+               [ "$CACHED_FORCE_REBUILD" = "${{ inputs.force_rebuild }}" ] && \
+               [ "$CACHED_BUILD_ALL_PATCHES" = "${{ inputs.build_all_patches }}" ]; then
+              echo "Using cached matrix results from previous run with matching parameters"
+              MATRIX_JSON=$(jq '.matrix' "$MATRIX_CACHE_FILE")
+              VERSIONS_CSV=$(cat "$VERSIONS_CACHE_FILE")
+
+              echo "matrix=$MATRIX_JSON" >> $GITHUB_OUTPUT
+              echo "versions_to_build=$VERSIONS_CSV" >> $GITHUB_OUTPUT
+
+              # Add to step summary
+              echo "## Build Matrix Generation (From Cache)" >> $GITHUB_STEP_SUMMARY
+              echo "| Description | Value |" >> $GITHUB_STEP_SUMMARY
+              echo "| ----------- | ----- |" >> $GITHUB_STEP_SUMMARY
+              echo "| Cache Used | Yes |" >> $GITHUB_STEP_SUMMARY
+              echo "| Cache Date | $(jq -r '.metadata.timestamp // "Unknown"' "$MATRIX_CACHE_FILE") |" >> $GITHUB_STEP_SUMMARY
+              echo "| Versions to Build | $(echo "$MATRIX_JSON" | jq '.include | length') |" >> $GITHUB_STEP_SUMMARY
+
+              # Exit early as we're using cached results
+              exit 0
+            else
+              echo "Cache parameters mismatch, regenerating matrix"
+            fi
+          fi
+
+          # Get all versions from Docker Hub
+          ALL_VERSIONS="${{ needs.get-dockerhub-tags.outputs.all_versions }}"
+          if [ -z "$ALL_VERSIONS" ]; then
+            echo "No versions found from Docker Hub"
+            echo "matrix={\"include\":[]}" >> $GITHUB_OUTPUT
+            echo "versions_to_build=" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # Get supported series (major.minor) from Zabbix API
+          SUPPORTED_VERSIONS="${{ needs.get-supported-versions.outputs.all_versions }}"
+
+          # Convert comma-separated values to JSON arrays, filtering out empty entries
+          ALL_VERSIONS_JSON=$(echo "$ALL_VERSIONS" | tr ',' '\n' | grep -v '^$' | jq -R . | jq -s '.')
+          SUPPORTED_VERSIONS_JSON=$(echo "$SUPPORTED_VERSIONS" | tr ',' '\n' | grep -v '^$' | jq -R . | jq -s '.')
+
+          # Extract major.minor from supported versions to create a filter
+          # Make sure we have proper version format and extract only valid series
+          SUPPORTED_SERIES_JSON=$(echo "$SUPPORTED_VERSIONS_JSON" | jq '[.[] |
+            select(test("^[0-9]+\\.[0-9]+\\.[0-9]+$")) |
+            split(".")[0:2] |
+            join(".") |
+            select(length > 0 and test("^[0-9]+\\.[0-9]+$"))]' |
+            jq 'unique')
+          echo "Supported series: $(echo "$SUPPORTED_SERIES_JSON" | jq -c .)"
+
+          # Count original versions before filtering
+          TOTAL_VERSIONS_COUNT=$(echo "$ALL_VERSIONS_JSON" | jq 'length')
+
+          # Get image name and env variables
+          IMAGE_NAME="${{ steps.set-image-name.outputs.image_name }}"
+          UPSTREAM_REPO="${{ env.UPSTREAM_REPO }}"
+          FORCE_REBUILD="${{ inputs.force_rebuild }}"
+          BUILD_ALL_PATCHES="${{ inputs.build_all_patches }}"
+
+          # Filter versions to only those in supported series and add metadata
+          FILTERED_VERSIONS_JSON=$(echo "$ALL_VERSIONS_JSON $SUPPORTED_SERIES_JSON" | \
+            jq -s --arg force "$FORCE_REBUILD" '
+              .[0] as $all_versions |
+              .[1] as $supported_series |
+              $all_versions |
+              # Filter to only supported series
+              map(select(
+                . as $version |
+                ($version | split(".")[0:2] | join(".")) as $version_major_minor |
+                $supported_series |
+                map(. == $version_major_minor) |
+                any
+              )) |
+              # Sort versions numerically
+              sort_by(
+                . | split(".") |
+                map(tonumber)
+              ) |
+              # Convert to objects with metadata
+              map({
+                zabbix_version: .,
+                major_minor: (. | split(".")[0:2] | join(".")),
+                image_tag: ("ubuntu-" + .),
+                upstream_exists: false,  # Placeholder to be filled later
+                image_exists: false,     # Placeholder to be filled later
+                should_build: ($force == "true")  # Default based on force flag
+              })
+            ')
+
+          # Count filtered versions and calculate skipped
+          FILTERED_VERSIONS_COUNT=$(echo "$FILTERED_VERSIONS_JSON" | jq -c 'length')
+          SKIPPED_VERSIONS_COUNT=$((TOTAL_VERSIONS_COUNT - FILTERED_VERSIONS_COUNT))
+
+          echo "Filtered version objects: $FILTERED_VERSIONS_COUNT (skipped $SKIPPED_VERSIONS_COUNT unsupported versions)"
+          echo "Optimized: Only checking existence for versions matching supported series"
+
+          # Step 1: Create a list of all tags to check with docker manifest
+          # We'll first check upstream tags, since we only need to check our images for versions where upstream exists
+
+          echo "Checking upstream image existence..."
+          UPSTREAM_CHECK_RESULT="{}"
+          UPSTREAM_CACHE_FILE="$DOCKER_CACHE_DIR/upstream-${UPSTREAM_REPO//\//-}.json"
+
+          # Load cache if it exists
+          if [ -f "$UPSTREAM_CACHE_FILE" ]; then
+            echo "Loading upstream manifest cache from $UPSTREAM_CACHE_FILE"
+            UPSTREAM_CHECK_RESULT=$(cat "$UPSTREAM_CACHE_FILE")
+          fi
+
+          # Process in batches to avoid overwhelming Docker Hub
+          echo "$FILTERED_VERSIONS_JSON" | jq -c '.[]' | while read -r VERSION_OBJ; do
+            VERSION=$(echo "$VERSION_OBJ" | jq -r '.zabbix_version')
+            TAG=$(echo "$VERSION_OBJ" | jq -r '.image_tag')
+
+            # Check if version already in cache
+            CACHED_RESULT=$(echo "$UPSTREAM_CHECK_RESULT" | jq -r --arg version "$VERSION" '.[$version] // "null"')
+
+            if [ "$CACHED_RESULT" != "null" ]; then
+              if [ "$CACHED_RESULT" = "true" ]; then
+                echo "✓ Upstream exists (cached): $VERSION"
+              else
+                echo "✗ No upstream (cached): $VERSION"
+              fi
+              continue
+            fi
+
+            # Check upstream image existence
+            if docker manifest inspect "$UPSTREAM_REPO:$TAG" &>/dev/null; then
+              # Add to our upstream check results
+              UPSTREAM_CHECK_RESULT=$(echo "$UPSTREAM_CHECK_RESULT" | jq --arg version "$VERSION" '. + {($version): true}')
+              echo "✓ Upstream exists: $VERSION"
+            else
+              UPSTREAM_CHECK_RESULT=$(echo "$UPSTREAM_CHECK_RESULT" | jq --arg version "$VERSION" '. + {($version): false}')
+              echo "✗ No upstream: $VERSION"
+            fi
+          done
+
+          # Save updated cache
+          echo "$UPSTREAM_CHECK_RESULT" > "$UPSTREAM_CACHE_FILE"
+
+          # If force_rebuild is false, check our images for versions where upstream exists
+          echo "Checking our image existence..."
+          IMAGE_CHECK_RESULT="{}"
+
+          # Create a cache key that includes the image name to avoid conflicts
+          IMAGE_CACHE_FILE="$DOCKER_CACHE_DIR/our-${IMAGE_NAME//\//-}.json"
+
+          # Load cache if it exists and we're not forcing rebuild
+          if [ "$FORCE_REBUILD" != "true" ] && [ -f "$IMAGE_CACHE_FILE" ]; then
+            echo "Loading our image manifest cache from $IMAGE_CACHE_FILE"
+            IMAGE_CHECK_RESULT=$(cat "$IMAGE_CACHE_FILE")
+          fi
+
+          if [ "$FORCE_REBUILD" != "true" ]; then
+            # Extract versions where upstream exists
+            UPSTREAM_EXISTS_VERSIONS=$(echo "$UPSTREAM_CHECK_RESULT" | jq 'to_entries | map(select(.value == true)) | map(.key)')
+
+            # Check our images only for versions where upstream exists
+            echo "$UPSTREAM_EXISTS_VERSIONS" | jq -c '.[]' | while read -r VERSION; do
+              # Remove quotes from version
+              VERSION=$(echo "$VERSION" | tr -d '"')
+              TAG="ubuntu-$VERSION"
+
+              # Check if version already in cache
+              CACHED_RESULT=$(echo "$IMAGE_CHECK_RESULT" | jq -r --arg version "$VERSION" '.[$version] // "null"')
+
+              if [ "$CACHED_RESULT" != "null" ]; then
+                if [ "$CACHED_RESULT" = "true" ]; then
+                  echo "✓ Our image exists (cached): $VERSION"
+                else
+                  echo "✗ Our image missing (cached): $VERSION"
+                fi
+                continue
+              fi
+
+              if docker manifest inspect "$IMAGE_NAME:$TAG" &>/dev/null; then
+                IMAGE_CHECK_RESULT=$(echo "$IMAGE_CHECK_RESULT" | jq --arg version "$VERSION" '. + {($version): true}')
+                echo "✓ Our image exists: $VERSION"
+              else
+                IMAGE_CHECK_RESULT=$(echo "$IMAGE_CHECK_RESULT" | jq --arg version "$VERSION" '. + {($version): false}')
+                echo "✗ Our image missing: $VERSION"
+              fi
+            done
+
+            # Save updated cache
+            echo "$IMAGE_CHECK_RESULT" > "$IMAGE_CACHE_FILE"
+          fi
+
+          # Now combine all the information using jq into a final filtered set of versions to build
+          FILTERED_RESULTS=$(echo "$FILTERED_VERSIONS_JSON $UPSTREAM_CHECK_RESULT $IMAGE_CHECK_RESULT" | \
+            jq -s --arg force "$FORCE_REBUILD" '
+              .[0] as $versions |
+              .[1] as $upstream_check |
+              .[2] as $image_check |
+
+              $versions | map(
+                . + {
+                  # Update upstream_exists from our check results
+                  upstream_exists: ($upstream_check[.zabbix_version] // false),
+                  # Update image_exists from our check results, only if upstream exists
+                  image_exists: (
+                    if ($upstream_check[.zabbix_version] == true) then
+                      ($image_check[.zabbix_version] // false)
+                    else
+                      false
+                    end
+                  )
+                } |
+                # Now calculate should_build based on all factors
+                . + {
+                  should_build: (
+                    ($force == "true") or
+                    (
+                      .upstream_exists == true and
+                      .image_exists == false
+                    )
+                  )
+                }
+              ) |
+              # Only keep versions we should build
+              map(select(.should_build == true))
+            ')
+
+          # Handle build_all_patches mode using JSON operations
+          if [[ "$BUILD_ALL_PATCHES" == "true" ]]; then
+            echo "Processing all patches mode with JSON approach..."
+
+            # Cache file for all patches results
+            ALL_PATCHES_CACHE_FILE="$DOCKER_CACHE_DIR/all-patches-${UPSTREAM_REPO//\//-}.json"
+
+            # Create a list of all possible patch versions for each major.minor series
+            # This is more complex as we need to check all possible patch versions
+            # First, extract all major.minor series and their max patch numbers
+            SERIES_INFO=$(echo "$FILTERED_RESULTS" | jq '
+              # Group by major_minor
+              group_by(.major_minor) |
+              # For each group, find highest patch and extract info
+              map({
+                major_minor: .[0].major_minor,
+                max_patch: (
+                  map(.zabbix_version | split(".") | .[2] | tonumber) | max
+                )
+              })
+            ')
+
+            # Generate a cache key based on the series info
+            SERIES_HASH=$(echo "$SERIES_INFO" | jq -c . | md5sum | cut -d' ' -f1)
+
+            # Try to load from cache if available
+            ALL_PATCHES_JSON="[]"
+            CACHE_VALID=false
+
+            if [ -f "$ALL_PATCHES_CACHE_FILE" ]; then
+              # Check if the cache matches our current series
+              CACHED_HASH=$(jq -r '.metadata.hash // ""' "$ALL_PATCHES_CACHE_FILE")
+
+              if [ "$CACHED_HASH" = "$SERIES_HASH" ]; then
+                echo "Loading all patches data from cache"
+                ALL_PATCHES_JSON=$(jq '.data' "$ALL_PATCHES_CACHE_FILE")
+                CACHE_VALID=true
+              else
+                echo "Cache hash mismatch, regenerating all patches data"
+              fi
+            fi
+
+            if [ "$CACHE_VALID" != "true" ]; then
+              echo "$SERIES_INFO" | jq -c '.[]' | while read -r SERIES; do
+                MAJOR_MINOR=$(echo "$SERIES" | jq -r '.major_minor')
+                MAX_PATCH=$(echo "$SERIES" | jq -r '.max_patch')
+
+                echo "Checking all patches for $MAJOR_MINOR series (0-$MAX_PATCH)..."
+
+                # Check each patch version
+                for ((PATCH=0; PATCH<=MAX_PATCH; PATCH++)); do
+                  FULL_VERSION="${MAJOR_MINOR}.${PATCH}"
+                  TAG="ubuntu-$FULL_VERSION"
+
+                  # Check only if upstream exists
+                  if docker manifest inspect "$UPSTREAM_REPO:$TAG" &>/dev/null; then
+                    # Create patch version entry
+                    PATCH_JSON=$(jq -n \
+                      --arg version "$FULL_VERSION" \
+                      --arg major_minor "$MAJOR_MINOR" \
+                      '{
+                        zabbix_version: $version,
+                        major_minor: $major_minor,
+                        image_tag: ("ubuntu-" + $version),
+                        upstream_exists: true,
+                        image_exists: false,
+                        should_build: true
+                      }')
+
+                    # Add to our all patches JSON array
+                    ALL_PATCHES_JSON=$(echo "$ALL_PATCHES_JSON" | jq --argjson patch "$PATCH_JSON" '. + [$patch]')
+                    echo "✓ Added patch version: $FULL_VERSION"
+                  else
+                    echo "✗ Skipping patch version (no upstream): $FULL_VERSION"
+                  fi
+                done
+              done
+
+              # Save to cache with metadata
+              jq -n --arg hash "$SERIES_HASH" --argjson data "$ALL_PATCHES_JSON" '{metadata: {hash: $hash}, data: $data}' > "$ALL_PATCHES_CACHE_FILE"
+            fi
+
+            # Combine and deduplicate
+            FILTERED_RESULTS=$(echo "$FILTERED_RESULTS $ALL_PATCHES_JSON" | jq -s '
+              .[0] + .[1] | unique_by(.zabbix_version)
+            ')
+          fi
+
+          # Extract the matrix-compatible format and versions CSV
+          MATRIX_JSON=$(echo "$FILTERED_RESULTS" | jq '{
+            include: map({
+              zabbix_version: .zabbix_version,
+              major_minor: .major_minor
+            })
+          }')
+
+          VERSIONS_CSV=$(echo "$FILTERED_RESULTS" | jq -r '[.[] | .zabbix_version] | join(",")')
+
+          # Save matrix results to cache
+          MATRIX_CACHE_DIR=~/.cache/matrix-results
+          mkdir -p "$MATRIX_CACHE_DIR"
+          MATRIX_CACHE_FILE="$MATRIX_CACHE_DIR/matrix.json"
+          VERSIONS_CACHE_FILE="$MATRIX_CACHE_DIR/versions.txt"
+
+          # Save matrix data with metadata
+          jq -n --arg date "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
+             --arg min_version "${{ inputs.min_version }}" \
+             --arg force "${{ inputs.force_rebuild }}" \
+             --arg all_patches "${{ inputs.build_all_patches }}" \
+             --argjson matrix "$MATRIX_JSON" \
+             '{
+                metadata: {
+                  timestamp: $date,
+                  min_version: $min_version,
+                  force_rebuild: $force,
+                  build_all_patches: $all_patches
+                },
+                matrix: $matrix
+             }' > "$MATRIX_CACHE_FILE"
+
+          echo "$VERSIONS_CSV" > "$VERSIONS_CACHE_FILE"
+
+          # Output the results
+          if [ "$(echo "$MATRIX_JSON" | jq '.include | length')" -gt 0 ]; then
+            echo "Generated build matrix with $(echo "$MATRIX_JSON" | jq '.include | length') versions"
+            echo "$MATRIX_JSON" | jq .
+
+            echo "matrix=$MATRIX_JSON" >> $GITHUB_OUTPUT
+            echo "versions_to_build=$VERSIONS_CSV" >> $GITHUB_OUTPUT
+          else
+            echo "No versions need to be built"
+            echo "matrix={\"include\":[]}" >> $GITHUB_OUTPUT
+            echo "versions_to_build=" >> $GITHUB_OUTPUT
+          fi
+
+          # Save final cache state for future runs
+          echo "Persisting cache for future runs..."
+          CACHE_METADATA_FILE="$DOCKER_CACHE_DIR/metadata.json"
+          jq -n --arg date "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" --arg workflow "${{ github.workflow }}" \
+             '{last_update: $date, workflow: $workflow, repository: "${{ github.repository }}"}' > "$CACHE_METADATA_FILE"
+
+          # Add to step summary
+          echo "## Build Matrix Generation" >> $GITHUB_STEP_SUMMARY
+          echo "| Description | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "| ----------- | ----- |" >> $GITHUB_STEP_SUMMARY
+          echo "| Docker Hub Tags | $TOTAL_VERSIONS_COUNT |" >> $GITHUB_STEP_SUMMARY
+          echo "| Supported Series | $(echo "$SUPPORTED_SERIES_JSON" | jq 'join(", ")') |" >> $GITHUB_STEP_SUMMARY
+          echo "| Filtered Versions | $FILTERED_VERSIONS_COUNT |" >> $GITHUB_STEP_SUMMARY
+          echo "| Skipped Versions | $SKIPPED_VERSIONS_COUNT |" >> $GITHUB_STEP_SUMMARY
+          echo "| Versions to Build | $(echo "$MATRIX_JSON" | jq '.include | length') |" >> $GITHUB_STEP_SUMMARY
+          echo "| Build All Patches | $BUILD_ALL_PATCHES |" >> $GITHUB_STEP_SUMMARY
+          echo "| Cache Used | Yes |" >> $GITHUB_STEP_SUMMARY
+
+  # Step 5: Build container images
+  build-images:
+    needs: [prepare-build-matrix, check-changes]
+    if: ${{ needs.check-changes.outputs.should_rebuild == 'true' && fromJson(needs.prepare-build-matrix.outputs.matrix).include[0] != null }}
+    # Per-version concurrency group to allow parallel builds of different versions
+    # but cancel in-progress builds for the same version
+    concurrency:
+      group: historical-build-${{ matrix.zabbix_version }}-${{ github.ref }}
+      cancel-in-progress: true
+    strategy:
+      matrix: ${{ fromJson(needs.prepare-build-matrix.outputs.matrix) }}
+      fail-fast: false
+    uses: ./.github/workflows/__build-container.yml
+    with:
+      zabbix_version: ${{ matrix.zabbix_version }}
+      major_minor: ${{ matrix.major_minor }}
+      # Pass the correct latest version from the job outputs
+      # This ensures tagging is done based on the actual highest version across all Zabbix releases
+      latest_version: ${{ needs.prepare-build-matrix.outputs.latest_version }}
+
+  # Step 6: Update documentation
+  update-docs:
+    needs: [get-supported-versions, get-dockerhub-tags, prepare-build-matrix, build-images, check-changes]
+    if: always()
+    uses: ./.github/workflows/__update-docs.yml
+    with:
+      latest_version: ${{ needs.get-supported-versions.outputs.latest_version }}
+      lts_version: ${{ needs.get-supported-versions.outputs.lts_version }}
+      all_versions: ${{ needs.get-supported-versions.outputs.all_versions }}
+      # Only update README versions if build was needed and successful, or if no rebuild was needed
+      # This ensures only successful builds update the version information
+      build_success: ${{ (needs.check-changes.outputs.should_rebuild == 'true' && needs.build-images.result == 'success') || needs.check-changes.outputs.should_rebuild == 'false' }}
+
+  # Step 7: Summary
+  summary:
+    needs: [get-supported-versions, get-dockerhub-tags, prepare-build-matrix, build-images, update-docs, check-changes]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Summarize build results
+        run: |
+          echo "# Historical Version Build Results" >> $GITHUB_STEP_SUMMARY
+
+          # Show change detection result
+          echo "## Change Detection" >> $GITHUB_STEP_SUMMARY
+          SHOULD_REBUILD="${{ needs.check-changes.outputs.should_rebuild }}"
+          COMMITS_SINCE_RELEASE="${{ needs.check-changes.outputs.commit_since_release }}"
+          LAST_RELEASE="${{ needs.check-changes.outputs.last_release }}"
+
+          if [ "$SHOULD_REBUILD" == "true" ]; then
+            echo "✅ **Changes detected** - Container rebuilds were needed" >> $GITHUB_STEP_SUMMARY
+
+            # Show more detailed information about why rebuild was needed
+            if [ "$COMMITS_SINCE_RELEASE" == "true" ]; then
+              if [ "$LAST_RELEASE" == "none" ]; then
+                echo "  - No GitHub releases found" >> $GITHUB_STEP_SUMMARY
+              else
+                echo "  - Unreleased commits detected since last release ($LAST_RELEASE)" >> $GITHUB_STEP_SUMMARY
+              fi
+            fi
+          else
+            echo "ℹ️ **No changes detected** - No container rebuilds were needed" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ] && [ "${{ inputs.force_rebuild }}" == "true" ]; then
+            echo "⚠️ **Force rebuild** was requested via workflow dispatch" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          if [ "${{ github.event_name }}" == "schedule" ]; then
+            echo "🕒 This was a **scheduled run**" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          # Show image name information
+          IMAGE_NAME="${{ needs.prepare-build-matrix.outputs.target_image }}"
+          echo "## Image Information" >> $GITHUB_STEP_SUMMARY
+          echo "Images built with name: **$IMAGE_NAME**" >> $GITHUB_STEP_SUMMARY
+
+          if [ -n "${{ inputs.custom_image_name }}" ]; then
+            echo "*(Using custom image name provided in workflow inputs)*" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          # Show versions information
+          echo "## Version Information" >> $GITHUB_STEP_SUMMARY
+          echo "| Description | Count |" >> $GITHUB_STEP_SUMMARY
+          echo "| ----------- | ----- |" >> $GITHUB_STEP_SUMMARY
+
+          # Docker Hub tags count
+          DOCKERHUB_TAG_COUNT=$(echo "${{ needs.get-dockerhub-tags.outputs.all_versions }}" | tr ',' '\n' | grep -v '^$' | wc -l)
+          echo "| Docker Hub Tags | $DOCKERHUB_TAG_COUNT |" >> $GITHUB_STEP_SUMMARY
+
+          # Supported versions count (already filtered in __version-detection.yml)
+          SUPPORTED_COUNT=$(echo "${{ needs.get-supported-versions.outputs.all_versions }}" | tr ',' '\n' | wc -l)
+          echo "| Supported Zabbix Versions | $SUPPORTED_COUNT |" >> $GITHUB_STEP_SUMMARY
+
+          # Versions to build count
+          if [[ -n "${{ needs.prepare-build-matrix.outputs.versions_to_build }}" ]]; then
+            BUILD_COUNT=$(echo "${{ needs.prepare-build-matrix.outputs.versions_to_build }}" | tr ',' '\n' | grep -v '^$' | wc -l)
+            echo "| Versions to Build | $BUILD_COUNT |" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "| Versions to Build | 0 |" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          # Show versions selected for building
+          echo "## Versions Selected for Building" >> $GITHUB_STEP_SUMMARY
+          if [[ -n "${{ needs.prepare-build-matrix.outputs.versions_to_build }}" ]]; then
+            VERSIONS_TO_BUILD=$(echo "${{ needs.prepare-build-matrix.outputs.versions_to_build }}" | tr ',' '\n')
+
+            # Group by major.minor series for better readability
+            echo "### By Release Series" >> $GITHUB_STEP_SUMMARY
+
+            # Extract major.minor versions
+            MAJOR_MINORS=$(echo "$VERSIONS_TO_BUILD" | cut -d. -f1-2 | sort -V -u)
+
+            for MM in $MAJOR_MINORS; do
+              # Get all versions for this major.minor
+              MM_VERSIONS=$(echo "$VERSIONS_TO_BUILD" | grep "^$MM\." | sort -V)
+              MM_COUNT=$(echo "$MM_VERSIONS" | wc -l)
+
+              echo "#### $MM Series ($MM_COUNT versions)" >> $GITHUB_STEP_SUMMARY
+              echo '```' >> $GITHUB_STEP_SUMMARY
+              echo "$MM_VERSIONS" | tr '\n' ' ' >> $GITHUB_STEP_SUMMARY
+              echo '' >> $GITHUB_STEP_SUMMARY
+              echo '```' >> $GITHUB_STEP_SUMMARY
+            done
+          else
+            echo "No versions needed to be built. All requested versions either:" >> $GITHUB_STEP_SUMMARY
+            echo "- Already exist in the registry" >> $GITHUB_STEP_SUMMARY
+            echo "- Have no upstream images available" >> $GITHUB_STEP_SUMMARY
+            echo "- Are not in a supported Zabbix major.minor series" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          # Show build status
+          echo "## Build Status" >> $GITHUB_STEP_SUMMARY
+          BUILD_JOB_STATUS="${{ needs.build-images.result }}"
+
+          case "$BUILD_JOB_STATUS" in
+            "success")
+              echo "**Build Status**: ✅ All builds completed successfully" >> $GITHUB_STEP_SUMMARY
+              ;;
+            "failure")
+              echo "**Build Status**: ❌ Some builds failed" >> $GITHUB_STEP_SUMMARY
+              ;;
+            "cancelled")
+              echo "**Build Status**: 🚫 Builds were cancelled" >> $GITHUB_STEP_SUMMARY
+              ;;
+            "skipped")
+              echo "**Build Status**: ⏭️ Builds were skipped (no versions to build)" >> $GITHUB_STEP_SUMMARY
+              ;;
+            *)
+              echo "**Build Status**: ⏳ Builds are in progress or status unknown" >> $GITHUB_STEP_SUMMARY
+              ;;
+          esac
+
+          # Add documentation update status
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Documentation Update" >> $GITHUB_STEP_SUMMARY
+
+          if [[ "$BUILD_JOB_STATUS" == "success" ]]; then
+            echo "✅ README version table has been updated" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "⚠️ README version table was NOT updated (requires successful build)" >> $GITHUB_STEP_SUMMARY
+          fi

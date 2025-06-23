@@ -1,0 +1,109 @@
+name: ◆ reusable | Check for Changes
+
+on:
+  workflow_call:
+    outputs:
+      should_rebuild:
+        description: "Whether containers should be rebuilt"
+        value: ${{ jobs.check.outputs.should_rebuild }}
+      last_release:
+        description: "Information about the last GitHub release"
+        value: ${{ jobs.check.outputs.last_release }}
+      commit_since_release:
+        description: "Whether there have been commits since the last release"
+        value: ${{ jobs.check.outputs.commit_since_release }}
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      should_rebuild: ${{ steps.check_changes.outputs.should_rebuild }}
+      last_release: ${{ steps.check_releases.outputs.last_release }}
+      commit_since_release: ${{ steps.check_releases.outputs.commit_since_release }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 50  # Increased depth to better detect changes since last release
+
+      - name: Cache Git history
+        uses: actions/cache@v4
+        with:
+          path: .git
+          key: ${{ runner.os }}-git-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-git-
+
+      - name: Check for GitHub releases
+        id: check_releases
+        run: |
+          # Get the latest release information
+          echo "Getting latest GitHub release information..."
+          RELEASE_INFO=$(curl -s -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${{ github.repository }}/releases/latest" || echo '{"tag_name":"none","created_at":"none"}')
+
+          # Check if we got valid release info
+          if [[ $(echo "$RELEASE_INFO" | jq -r '.tag_name') == "none" || $(echo "$RELEASE_INFO" | jq -r '.message') == "Not Found" ]]; then
+            echo "No releases found. This suggests we need to build."
+            echo "last_release=none" >> "$GITHUB_OUTPUT"
+            echo "commit_since_release=true" >> "$GITHUB_OUTPUT"
+          else
+            # Extract release info
+            LATEST_TAG=$(echo "$RELEASE_INFO" | jq -r '.tag_name')
+            RELEASE_DATE=$(echo "$RELEASE_INFO" | jq -r '.created_at')
+
+            echo "Latest release: $LATEST_TAG (created at $RELEASE_DATE)"
+            echo "last_release=${LATEST_TAG}" >> "$GITHUB_OUTPUT"
+
+            # Check if there have been commits since the last release
+            LATEST_RELEASE_SHA=$(git rev-list -n 1 "$LATEST_TAG" 2>/dev/null || echo "notfound")
+
+            if [[ "$LATEST_RELEASE_SHA" == "notfound" ]]; then
+              echo "Release tag not found in local git history. Need more history or tag doesn't exist locally."
+              echo "commit_since_release=true" >> "$GITHUB_OUTPUT"
+            else
+              # Check for any commits between latest release and current HEAD
+              COMMITS_SINCE_RELEASE=$(git rev-list --count "$LATEST_RELEASE_SHA..HEAD")
+
+              if [[ "$COMMITS_SINCE_RELEASE" -gt 0 ]]; then
+                echo "Found $COMMITS_SINCE_RELEASE commit(s) since last release. A rebuild is needed."
+                echo "commit_since_release=true" >> "$GITHUB_OUTPUT"
+              else
+                echo "No commits since the last release."
+                echo "commit_since_release=false" >> "$GITHUB_OUTPUT"
+              fi
+            fi
+          fi
+
+      - name: Check for changes that require container rebuilds
+        id: check_changes
+        run: |
+          # Check if manual force rebuild is requested
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ github.event.inputs.force_rebuild }}" == "true" ]]; then
+            echo "Force rebuild requested via workflow dispatch"
+            echo "should_rebuild=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Check if this is a scheduled run (daily cron)
+          if [[ "${{ github.event_name }}" == "schedule" ]]; then
+            echo "Scheduled run, will rebuild containers"
+            echo "should_rebuild=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Check if there have been commits since the last release
+          if [[ "${{ steps.check_releases.outputs.commit_since_release }}" == "true" ]]; then
+            echo "There have been commits since the last release. A rebuild is needed."
+            echo "should_rebuild=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Check for changes in important files
+          if git diff --name-only HEAD~1 HEAD | grep -q -E '^Dockerfile$|^scripts/|^mibs/|^\.github/workflows/'; then
+            echo "Changes detected in Dockerfile or related files"
+            echo "should_rebuild=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No changes that would require rebuilding containers"
+            echo "should_rebuild=false" >> "$GITHUB_OUTPUT"
+          fi

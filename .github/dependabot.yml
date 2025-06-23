@@ -1,0 +1,82 @@
+# Dependabot configuration file
+# Reference: https://docs.github.com/en/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
+
+version: 2
+updates:
+  # Docker dependency updates
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "saturday"
+      time: "09:00"
+      timezone: "UTC"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+      - "docker"
+    commit-message:
+      prefix: "chore(deps)"
+      include: "scope"
+    ignore:
+      # Ignore major updates for Docker images (matching your Renovate config)
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+    # Security updates
+    security-updates-only: false
+    # Auto-merge minor and patch updates (matching your Renovate config)
+    automerge: true
+    automerge-strategy: "squash"
+    conditions:
+      - "author=dependabot[bot]"
+      - "check-success=build"
+
+  # GitHub Actions dependency updates
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "saturday"
+      time: "09:00"
+      timezone: "UTC"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+      - "github-actions"
+    commit-message:
+      prefix: "chore(deps)"
+      include: "scope"
+    # Auto-merge minor and patch updates for GitHub Actions
+    automerge: true
+    automerge-strategy: "squash"
+    conditions:
+      - "author=dependabot[bot]"
+      - "check-success=build"
+
+  # Python package dependencies (for any Python scripts)
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "sunday"
+      time: "09:00"
+      timezone: "UTC"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "python"
+    commit-message:
+      prefix: "chore(deps)"
+      include: "scope"
+    automerge: true
+    automerge-strategy: "squash"
+    conditions:
+      - "author=dependabot[bot]"
+      - "check-success=build"
+
+# Note: The following custom dependencies are NOT managed by Dependabot
+# but are handled by the custom-dependencies-check.yml workflow:
+# 1. Zabbix version (from zabbix-api)
+# 2. Speedtest CLI (from speedtest.net)
+# 3. CloudflarePyCLI (from PyPI, but needs custom extraction)
+# 4. kubectl (from kubernetes.io)

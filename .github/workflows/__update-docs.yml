@@ -1,0 +1,306 @@
+name: ◆ reusable | Update Documentation
+
+on:
+  workflow_call:
+    inputs:
+      latest_version:
+        required: true
+        type: string
+      lts_version:
+        required: true
+        type: string
+      all_versions:
+        required: true
+        type: string
+      build_success:
+        required: false
+        type: boolean
+        default: false
+        description: "Whether the build was successful"
+
+jobs:
+  update-docs:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Update README with version table
+        id: update_readme
+        run: |
+          # Check if this is a build from a successful workflow
+          # If BUILD_SUCCESS is not set to 'true', don't update version information
+          BUILD_SUCCESS='${{ inputs.build_success }}'
+
+          LATEST_VERSION='${{ inputs.latest_version }}'
+          LTS_VERSION='${{ inputs.lts_version }}'
+          ALL_VERSIONS='${{ inputs.all_versions }}'
+
+          echo "Build success status: $BUILD_SUCCESS"
+          echo "Latest version: $LATEST_VERSION"
+          echo "LTS version: $LTS_VERSION"
+          echo "All versions: $ALL_VERSIONS"
+
+          if [[ "$BUILD_SUCCESS" != "true" ]]; then
+            echo "Build was not successful or status not provided. Skipping version update in README."
+            echo "::warning::README version table not updated because build was not successful."
+
+            # Add more detailed info to step summary
+            echo "## README Version Update Status" >> $GITHUB_STEP_SUMMARY
+            echo "⚠️ **Version update skipped:** Build was not successful" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "The README version table is only updated after successful builds to ensure accurate version information." >> $GITHUB_STEP_SUMMARY
+            echo "- Latest detected version: $LATEST_VERSION (not updated in README)" >> $GITHUB_STEP_SUMMARY
+            echo "- LTS detected version: $LTS_VERSION (not updated in README)" >> $GITHUB_STEP_SUMMARY
+
+            exit 0
+          fi
+
+          # Add success notice to summary before proceeding
+          echo "## README Version Update Status" >> $GITHUB_STEP_SUMMARY
+          echo "✅ **Version update in progress:** Build was successful" >> $GITHUB_STEP_SUMMARY
+
+          if [[ -n "$LATEST_VERSION" && -f "README.md" ]]; then
+            echo "Updating README.md with version information..."
+
+            TABLE="## Available Versions"
+            TABLE+="\n"
+            TABLE+="\n| Version | Tags | Description |"
+            TABLE+="\n|---------|------|-------------|"
+
+            for VERSION in $(echo "${ALL_VERSIONS%,}" | tr ',' ' ' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -Vr); do
+              # Skip empty versions (should be filtered already, but adding an extra check)
+              [[ -z "$VERSION" ]] && continue
+              MAJOR=$(echo "$VERSION" | cut -d. -f1)
+              MINOR=$(echo "$VERSION" | cut -d. -f2)
+              if [[ "$VERSION" == "$LTS_VERSION" ]]; then
+                TABLE+="\n| $VERSION | \`lts\`, \`$VERSION\`, \`$MAJOR.$MINOR\` | LTS (Long-Term Support) version |"
+              elif [[ "$VERSION" == "$LATEST_VERSION" ]]; then
+                TABLE+="\n| $VERSION | \`latest\`, \`$VERSION\`, \`$MAJOR.$MINOR\` | Latest bleeding edge version |"
+              else
+                TABLE+="\n| $VERSION | \`$VERSION\`, \`$MAJOR.$MINOR\` | Supported version |"
+              fi
+            done
+
+            TABLE+="\n\n> **Note:** The \`latest\` tag follows Zabbix's upstream latest version ($LATEST_VERSION), while the \`lts\` tag points to the Long-Term Support version ($LTS_VERSION)."
+
+            if grep -q "## Available Versions" README.md; then
+              START_LINE=$(grep -n "## Available Versions" README.md | cut -d: -f1)
+              NEXT_SECTION=$(tail -n +$((START_LINE + 1)) README.md | grep -n "^## " | head -n1 | cut -d: -f1)
+              if [[ -n "$NEXT_SECTION" ]]; then
+                END_LINE=$((START_LINE + NEXT_SECTION))
+                head -n $((START_LINE - 1)) README.md > README.md.tmp
+                echo -e "$TABLE" >> README.md.tmp
+                tail -n +$END_LINE README.md >> README.md.tmp
+                mv README.md.tmp README.md
+              else
+                head -n $((START_LINE - 1)) README.md > README.md.tmp
+                echo -e "$TABLE" >> README.md.tmp
+                mv README.md.tmp README.md
+              fi
+            else
+              INTRO_LINE=$(grep -n "It includes a few additional binaries and scripts" README.md | cut -d: -f1)
+              if [[ -n "$INTRO_LINE" ]]; then
+                head -n "$INTRO_LINE" README.md > README.md.tmp
+                echo -e "\n$TABLE" >> README.md.tmp
+                tail -n +$((INTRO_LINE + 1)) README.md >> README.md.tmp
+                mv README.md.tmp README.md
+              fi
+            fi
+            echo "Updated README.md with version information"
+
+            # Add detailed version info to step summary
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### Version Information Updated in README" >> $GITHUB_STEP_SUMMARY
+            echo "| Type | Version |" >> $GITHUB_STEP_SUMMARY
+            echo "| ---- | ------- |" >> $GITHUB_STEP_SUMMARY
+            echo "| Latest | $LATEST_VERSION |" >> $GITHUB_STEP_SUMMARY
+            echo "| LTS | $LTS_VERSION |" >> $GITHUB_STEP_SUMMARY
+            # Get clean, comma-separated version list with version validation
+            CLEAN_VERSIONS=$(echo "$ALL_VERSIONS" | tr ',' '\n' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | tr '\n' ',' | sed 's/,/, /g' | sed 's/, $//')
+            echo "| All Supported Versions | $CLEAN_VERSIONS |" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "Warning: No version data or README.md not found"
+            echo "⚠️ **Warning:** Could not update README - either no version data provided or README.md not found" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Update GitHub organization references
+        id: update_org_refs
+        run: |
+          REPO_OWNER="${{ github.repository_owner }}"
+          REPO_NAME="${{ github.repository }}"
+          REPO_NAME="${REPO_NAME#*/}"
+          echo "Repository owner: $REPO_OWNER"
+          echo "Repository name: $REPO_NAME"
+
+          # Find all markdown files in the repository (excluding specific paths)
+          echo "Finding all markdown files in the repository..."
+          MARKDOWN_FILES=$(find . -type f -name "*.md" | grep -v "node_modules\|vendor\|\.git")
+
+          # Counter for modified files
+          MODIFIED_COUNT=0
+
+          for file in $MARKDOWN_FILES; do
+            echo "Processing $file..."
+            # Create a backup of the original file for comparison
+            cp "$file" "${file}.bak"
+
+            # Replace explicit GITHUB_USERNAME placeholders
+            sed -i "s|ghcr\.io/GITHUB_USERNAME/|ghcr\.io/$REPO_OWNER/|g" "$file"
+            sed -i "s|ghcr\.io/GITHUB_USERNAME|ghcr\.io/$REPO_OWNER|g" "$file"
+
+            # Handle specific Docker image repository references - prevent duplication of -av-edition
+            sed -i "s|ghcr\.io/[^/]*/zabbix-proxy-sqlite3-av-edition[^:]*|ghcr\.io/$REPO_OWNER/$REPO_NAME|g" "$file"
+            sed -i "s|ghcr\.io/[^/]*/zabbix-proxy-sqlite3|ghcr\.io/$REPO_OWNER/$REPO_NAME|g" "$file"
+
+            # Handle repository-owner placeholders with angle brackets
+            sed -i "s|ghcr\.io/<repository-owner>/|ghcr\.io/$REPO_OWNER/|g" "$file"
+            sed -i "s|github\.com/<repository-owner>/|github\.com/$REPO_OWNER/|g" "$file"
+
+            # Handle image name placeholders - using the full repository name for consistency
+            if [[ -n "$REPO_NAME" ]]; then
+              sed -i "s|<derived-image-name>|$REPO_NAME|g" "$file"
+            fi
+
+            # Special handling for Docker image references in code blocks
+            if grep -q "ghcr\.io/" "$file"; then
+              echo "Fixing Docker image references in code blocks..."
+              # These patterns will specifically target the duplicated -av-edition strings in docker commands
+              sed -i "s|docker pull ghcr\.io/[^/:]*/zabbix-proxy-sqlite3-av-edition[^:]*:|docker pull ghcr\.io/$REPO_OWNER/$REPO_NAME:|g" "$file"
+              sed -i "s|ghcr\.io/[^/:]*/zabbix-proxy-sqlite3-av-edition-av-edition[^:]*:|ghcr\.io/$REPO_OWNER/$REPO_NAME:|g" "$file"
+              sed -i "s|ghcr\.io/[^/:]*/zabbix-proxy-sqlite3-av-edition[^:]*:|ghcr\.io/$REPO_OWNER/$REPO_NAME:|g" "$file"
+
+              # Handle docker-compose image references
+              sed -i "s|image: ghcr\.io/[^/:]*/zabbix-proxy-sqlite3-av-edition[^:]*:|image: ghcr\.io/$REPO_OWNER/$REPO_NAME:|g" "$file"
+
+              # More thorough fix to clean all duplicated suffixes by using a loop approach
+              # First, ensure we have at least one suffix
+              sed -i "s|ghcr\.io/[^/:]*/zabbix-proxy-sqlite3|ghcr.io/$REPO_OWNER/$REPO_NAME|g" "$file"
+              # Then remove any duplicated suffixes with a more comprehensive approach
+              while grep -q "av-edition-av-edition" "$file"; do
+                sed -i "s|-av-edition-av-edition|-av-edition|g" "$file"
+              done
+            fi
+
+            # Handle footer links and other specific sections in README.md
+            if [[ "$file" == *"README.md" ]]; then
+              echo "Updating repository references in README.md..."
+
+              # Update the footer links with the current repository using safer patterns
+              sed -i "s|\[🌟 Star this repo\](https://github\.com/[^/]*/[^)]*|\[🌟 Star this repo\](https://github.com/$REPO_OWNER/$REPO_NAME|g" "$file"
+              sed -i "s|\[🐛 Report Bug\](https://github\.com/[^/]*/[^/]*/issues|\[🐛 Report Bug\](https://github.com/$REPO_OWNER/$REPO_NAME/issues|g" "$file"
+              sed -i "s|\[💡 Request Feature\](https://github\.com/[^/]*/[^/]*/issues|\[💡 Request Feature\](https://github.com/$REPO_OWNER/$REPO_NAME/issues|g" "$file"
+
+              # Update Documentation & Support section links
+              sed -i "s|\[Issue Tracker\](https://github\.com/[^/]*/[^/]*/issues|\[Issue Tracker\](https://github.com/$REPO_OWNER/$REPO_NAME/issues|g" "$file"
+              sed -i "s|\[Discussions\](https://github\.com/[^/]*/[^/]*/discussions|\[Discussions\](https://github.com/$REPO_OWNER/$REPO_NAME/discussions|g" "$file"
+
+              # Update badge links - using safer patterns to avoid regex issues
+              sed -i "s|https://github.com/[^/]*/zabbix-proxy-sqlite3-av-edition/actions|https://github.com/$REPO_OWNER/$REPO_NAME/actions|g" "$file"
+              sed -i "s|https://img.shields.io/github/v/release/[^/]*/zabbix-proxy-sqlite3-av-edition|https://img.shields.io/github/v/release/$REPO_OWNER/$REPO_NAME|g" "$file"
+
+              # Generic badge links update for any repository pattern
+              sed -i "s|https://github.com/[^/]*/$REPO_NAME/actions|https://github.com/$REPO_OWNER/$REPO_NAME/actions|g" "$file"
+              sed -i "s|https://img.shields.io/github/v/release/[^/]*/$REPO_NAME|https://img.shields.io/github/v/release/$REPO_OWNER/$REPO_NAME|g" "$file"
+            fi
+
+            # Check if the file was modified
+            if ! cmp -s "$file" "${file}.bak"; then
+              echo "✓ Updated organization references in $file"
+              # Show what changed (sample)
+              echo "   Changes made (sample):"
+              diff -U0 "${file}.bak" "$file" | grep '^[+-][^+-]' | head -10
+              MODIFIED_COUNT=$((MODIFIED_COUNT + 1))
+            else
+              echo "✓ No changes needed in $file"
+            fi
+
+            # Remove the backup file
+            rm "${file}.bak"
+          done
+
+          echo "=== Summary ==="
+          echo "Modified $MODIFIED_COUNT markdown files with repository references"
+          echo "## Repository References Update" >> $GITHUB_STEP_SUMMARY
+          echo "- Updated $MODIFIED_COUNT markdown files with repository references" >> $GITHUB_STEP_SUMMARY
+          echo "- Repository Owner: \`$REPO_OWNER\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Repository Name: \`$REPO_NAME\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Fixed image references: \`ghcr.io/$REPO_OWNER/$REPO_NAME\`" >> $GITHUB_STEP_SUMMARY
+
+          # Report duplicated suffixes that were fixed
+          DUPLICATIONS=$(grep -r "av-edition-av-edition" --include="*.md" . | wc -l)
+          if [ "$DUPLICATIONS" -gt 0 ]; then
+            echo "⚠️ Warning: $DUPLICATIONS remaining duplicated repository name suffixes found" >> $GITHUB_STEP_SUMMARY
+            echo "Run the workflow again if needed to fix all instances" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "✅ No duplicated repository name suffixes found" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Commit changes back to repository
+        id: commit_changes
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+
+          # Check if there are any changes to commit
+          if git diff --exit-code --quiet; then
+            echo "No changes to commit"
+            echo "## Git Status" >> $GITHUB_STEP_SUMMARY
+            echo "No changes were made to the repository - everything was already up-to-date" >> $GITHUB_STEP_SUMMARY
+            exit 0
+          fi
+
+          # Find all markdown files that might have changed
+          MARKDOWN_FILES=$(find . -type f -name "*.md" | grep -v "node_modules\|vendor\|\.git")
+
+          # Track if we need to commit any changes
+          CHANGES_DETECTED=false
+
+          # Check each file for changes
+          for file in $MARKDOWN_FILES; do
+            if ! git diff --exit-code "$file" > /dev/null 2>&1; then
+              echo "Changes detected in $file"
+              git add "$file"
+              CHANGES_DETECTED=true
+            fi
+          done
+
+          # Validation step to check for Docker image references
+          echo "Validating Docker image references..."
+          INCORRECT_REFS=$(grep -r "av-edition-av-edition" --include="*.md" . | wc -l)
+          if [ "$INCORRECT_REFS" -gt 0 ]; then
+            echo "⚠️ Warning: $INCORRECT_REFS Docker image references with duplicated suffixes found"
+            echo "Applying additional fixes..."
+
+            # One more thorough pass to fix any remaining issues
+            for file in $MARKDOWN_FILES; do
+              if grep -q "ghcr\.io/" "$file"; then
+                # First ensure correct base format
+                sed -i "s|ghcr\.io/[^/:]*/zabbix-proxy-sqlite3|ghcr\.io/$REPO_OWNER/$REPO_NAME|g" "$file"
+                # Then remove duplicates in a loop until none remain
+                while grep -q "av-edition-av-edition" "$file"; do
+                  sed -i "s|-av-edition-av-edition|-av-edition|g" "$file"
+                done
+                git add "$file"
+              fi
+            done
+          fi
+
+          # Commit if any files changed
+          if [ "$CHANGES_DETECTED" = true ]; then
+            echo "Committing changes to documentation files..."
+
+            # Check specifically for Docker image reference fixes
+            if git diff --staged | grep -q "ghcr\.io"; then
+              echo "Fixed Docker image references in documentation"
+              git commit -m "Update documentation with latest version information and fixed Docker image references"
+            else
+              git commit -m "Update documentation with latest version information and repository references"
+            fi
+
+            git push
+            echo "Changes committed and pushed."
+          else
+            echo "No changes to commit."
+          fi

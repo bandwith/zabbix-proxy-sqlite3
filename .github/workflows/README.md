@@ -13,29 +13,56 @@ This is the primary workflow for this repository. It handles:
 
 **When it runs:**
 - Daily at midnight UTC
-- When changes are pushed to the `main` branch affecting the `Dockerfile`, `scripts/` directory, or the workflow itself
+- When changes are pushed to the `main` branch affecting the `Dockerfile`, `scripts/` directory, `mibs/` directory, or the workflow itself
 - Manually via the "Run workflow" button with option to force rebuild all containers
+
+### build-historical-versions.yml (Historical Versions)
+
+This workflow builds historical versions of Zabbix Proxy containers. It handles:
+
+1. **Version Discovery**: Uses the Zabbix API to identify supported major.minor series
+2. **Docker Hub Tag Scanning**: Scans Docker Hub for available tags matching supported series
+3. **Conditional Building**: Only builds versions that don't exist in our registry but do exist upstream
+4. **Patch Expansion**: Optionally builds all patch versions (0 to latest) for each major.minor series
+
+**When it runs:**
+- Manually via the "Run workflow" button with the following options:
+  - Minimum version to start building from
+  - Whether to force rebuild existing images
+  - Optional custom image name
+  - Whether to build all patch versions for each major.minor series
 
 ## Reusable Workflows
 
-The CI process has been refactored into modular, reusable workflows with a leading underscore (`_`) to differentiate them from main workflows:
+The CI process has been refactored into modular, reusable workflows with:
+- Double underscore filenames (`__`) to sort them lower in the file list
+- Display names with `◆ reusable |` prefix to sort them lower in the GitHub Actions UI
 
-- **_version-detection.yml**: Detects supported Zabbix versions and generates the build matrix
-- **_check-changes.yml**: Determines if containers need rebuilding based on changes or schedule
-- **_update-docs.yml**: Updates documentation with available Zabbix versions
-- **_build-container.yml**: Builds, scans, and publishes Docker images for specific versions, generates SBOMs, and submits dependency data to GitHub
-- **_cleanup.yml**: Handles cleanup of failed releases and tags
+Reusable workflows:
+
+- **__version-detection.yml**: Detects supported Zabbix versions from the Zabbix API
+- **__dockerhub-tags.yml**: Retrieves available container tags from Docker Hub
+- **__check-changes.yml**: Determines if containers need rebuilding based on changes or schedule
+- **__update-docs.yml**: Updates documentation with available Zabbix versions
+- **__build-container.yml**: Builds, scans, and publishes Docker images for specific versions, generates SBOMs, and submits dependency data to GitHub
+- **__cleanup.yml**: Handles cleanup of failed releases and tags (used by ci-release.yml)
 
 ### Workflow Architecture
 
 ```
 ci-release.yml (orchestrator)
   ↓
-  ├─ _version-detection.yml
-  ├─ _check-changes.yml
-  ├─ _update-docs.yml
-  └─ _build-container.yml (matrix strategy)
-      └─ _cleanup.yml (on failure)
+  ├─ __version-detection.yml
+  ├─ __check-changes.yml
+  ├─ __update-docs.yml
+  └─ __build-container.yml (matrix strategy)
+      └─ __cleanup.yml (on failure)
+
+build-historical-versions.yml (historical builds)
+  ↓
+  ├─ __version-detection.yml
+  ├─ __dockerhub-tags.yml
+  └─ __build-container.yml (matrix strategy)
 ```
 
 ## Supporting Workflows

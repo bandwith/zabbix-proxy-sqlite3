@@ -20,7 +20,13 @@ on:
     paths:
       - 'Dockerfile'
       - 'scripts/**'
+      - 'mibs/**'
       - '.github/workflows/**'
+
+# Ensure we don't run concurrent builds for the same ref/branch
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 # Security: Minimal required permissions
 permissions:
@@ -33,24 +39,33 @@ permissions:
 env:
   # Security: Define allowed registries
   ALLOWED_REGISTRIES: "ghcr.io"
+  REGISTRY: "ghcr.io"
+  # Default repo name, can be customized in repository settings or overrides
+  REPO_NAME: "zabbix-proxy-sqlite3"
+  # Default base name for documentation and references
+  BASE_NAME: "Zabbix Proxy SQLite3 AV Edition"
 
 jobs:
   # First, detect Zabbix versions
   detect-versions:
-    uses: ./.github/workflows/_version-detection.yml
+    uses: ./.github/workflows/__version-detection.yml
 
   # Check if we need to rebuild containers
   check-changes:
-    uses: ./.github/workflows/_check-changes.yml
+    uses: ./.github/workflows/__check-changes.yml
 
-  # Update documentation
+  # Update documentation - moved to run after build completes
   update-docs:
-    needs: detect-versions
-    uses: ./.github/workflows/_update-docs.yml
+    needs: [detect-versions, build-containers]
+    # Always run this job, but the workflow itself will check build success
+    if: always()
+    uses: ./.github/workflows/__update-docs.yml
     with:
       latest_version: ${{ needs.detect-versions.outputs.latest_version }}
       lts_version: ${{ needs.detect-versions.outputs.lts_version }}
       all_versions: ${{ needs.detect-versions.outputs.all_versions }}
+      # Only update README versions if build was successful
+      build_success: ${{ needs.build-containers.result == 'success' }}
 
   # Build and push containers in matrix
   matrix-setup:
@@ -125,10 +140,15 @@ jobs:
   # Run build for each matrix item
   build-containers:
     needs: [matrix-setup, detect-versions]
+    # Per-version concurrency group to allow parallel builds of different versions
+    # but cancel in-progress builds for the same version
+    concurrency:
+      group: build-${{ matrix.zabbix_version }}-${{ github.ref }}
+      cancel-in-progress: true
     strategy:
       matrix: ${{ fromJson(needs.matrix-setup.outputs.matrix) }}
       fail-fast: false
-    uses: ./.github/workflows/_build-container.yml
+    uses: ./.github/workflows/__build-container.yml
     with:
       zabbix_version: ${{ matrix.zabbix_version }}
       major_minor: ${{ matrix.major_minor }}
